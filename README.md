@@ -1,14 +1,16 @@
 # 🇰🇷👩‍🏫 KoreanTeacher_LINE
 
-An incredibly dynamic, AI-powered interactive Korean Teacher bot built natively for LINE! Built to assist Japanese speakers in learning Korean naturally through bilingual voice interaction, grammar corrections, and seamless memory retention via Google Cloud.
+An incredibly dynamic, AI-powered interactive Korean Teacher bot built natively for LINE! Mentored by **Teacher Kim Hyun-woo (김현우)**, this bot helps Japanese beginners learn Korean naturally through bilingual voice interaction, foundations-first corrections, and permanent memory retention.
 
 ## ✨ Features
 
-- **🗣️ Advanced Bilingual Voice Interaction**
-  - Sends a voice message speaking Japanese or Korean, and the bot intelligently detects your spoken language via **Gemini 2.5**.
-  - Expect fully conversational audio replies strictly mirroring your chosen language, generated via the premium **Google Cloud Neural2 Text-to-Speech API**. 
-- **💬 Nuanced Natural Text Replies**
-  - Sends written corrections with casual, supportive tone alongside expressive emojis. It isolates the friendly formatted text from the clean spoken script!
+- **👨‍🏫 Teacher Kim Hyun-woo (김현우)**
+  - A professional but warm persona tailored for beginners. He focuses on small, foundational mistakes (particles, conjugations) to ensure a strong language start.
+- **🗣️ Integrated Bilingual Audio**
+  - Sends a voice message in Japanese or Korean, and Kim Hyun-woo intelligently detects the context via **Gemini 2.5**.
+  - Expect natural audio replies mirrored to your target language, powered by the highest quality **Male Neural2 AI voices**.
+- **⚡ Ultra-Concise & Simple**
+  - No more verbosity! Responses are strictly brief (1-2 sentences) and utilize elementary-level Korean vocabulary for maximum comprehension.
 - **🧠 Permanent Conversational Memory**
   - Natively tracks users across individual `user_id`s, archiving their conversational progression into **Google Cloud Firestore**. Your teacher remembers what you chatted about yesterday!
 - **☁️ Serverless Cloud Native**

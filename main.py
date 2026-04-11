@@ -119,12 +119,12 @@ def handle_audio_message(event):
         if feedback_lang == 'ko':
             voice = texttospeech.VoiceSelectionParams(
                 language_code="ko-KR",
-                name="ko-KR-Neural2-a"
+                name="ko-KR-Neural2-C"
             )
         else:
             voice = texttospeech.VoiceSelectionParams(
                 language_code="ja-JP",
-                name="ja-JP-Neural2-B"
+                name="ja-JP-Neural2-D"
             )
 
         audio_config = texttospeech.AudioConfig(
