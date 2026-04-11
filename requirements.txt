@@ -1,0 +1,9 @@
+fastapi
+uvicorn
+line-bot-sdk
+google-genai
+python-dotenv
+httpx
+google-cloud-texttospeech
+pydantic
+google-cloud-firestore
