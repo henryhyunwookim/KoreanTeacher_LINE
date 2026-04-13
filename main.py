@@ -144,14 +144,6 @@ def generate_tts_audio(text: str, lang: str, output_id: str) -> tuple:
     audio_url = f"{BASE_URL}/audio/{output_id}_{lang}.m4a"
     return audio_url, duration_ms
 
-def _format_message(text: str) -> str:
-    """Insert a line break after the 📝 translation line if present."""
-    if '📝' in text:
-        lines = text.split('\n', 1)
-        if len(lines) == 2:
-            return lines[0] + '\n\n' + lines[1]
-    return text
-
 @handler.add(MessageEvent, message=TextMessageContent)
 def handle_text_message(event):
     user_id = event.source.user_id
@@ -160,10 +152,13 @@ def handle_text_message(event):
         # Get feedback from Gemini (Structured JSON with bilingual fields)
         feedback_data = gemini_client.evaluate_korean_text(user_id, user_text)
         
-        # Build bilingual text transcript with line breaks after translations
-        msg_ko = _format_message(feedback_data['message_ko'])
-        msg_ja = _format_message(feedback_data['message_ja'])
-        transcript = f"🇰🇷 {msg_ko}\n\n🇯🇵 {msg_ja}"
+        # Build bilingual text transcript: Translation first, then responses
+        # Ensure a clear line break after the translation as requested.
+        transcript = (
+            f"{feedback_data['user_input_translation']}\n\n"
+            f"🇰🇷 {feedback_data['teacher_response_ko']}\n"
+            f"🇯🇵 {feedback_data['teacher_response_ja']}"
+        )
         
         # Text input: reply with text only (no audio)
         with ApiClient(configuration) as api_client:
@@ -204,10 +199,12 @@ def handle_audio_message(event):
         # Get feedback from Gemini (Structured JSON with bilingual fields)
         feedback_data = gemini_client.evaluate_korean_audio(user_id, temp_file_path, mime_type="audio/mp4")
         
-        # Build bilingual text transcript
-        msg_ko = _format_message(feedback_data['message_ko'])
-        msg_ja = _format_message(feedback_data['message_ja'])
-        transcript = f"🇰🇷 {msg_ko}\n\n🇯🇵 {msg_ja}"
+        # Build bilingual text transcript: Translation first, then responses
+        transcript = (
+            f"{feedback_data['user_input_translation']}\n\n"
+            f"🇰🇷 {feedback_data['teacher_response_ko']}\n"
+            f"🇯🇵 {feedback_data['teacher_response_ja']}"
+        )
         
         # Generate TTS audio in the user's input language
         lang = feedback_data['detected_lang']
