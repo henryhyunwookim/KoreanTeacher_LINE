@@ -1,14 +1,17 @@
-# 🇰🇷👩‍🏫 KoreanTeacher_LINE
+# 🇰🇷🇯🇵 KoreanTeacher_LINE
 
-An incredibly dynamic, AI-powered interactive Korean Teacher bot built natively for LINE! Mentored by **Teacher Kim Hyun-woo (김현우)**, this bot helps Japanese beginners learn Korean naturally through bilingual voice interaction, foundations-first corrections, and permanent memory retention.
+An incredibly dynamic, AI-powered interactive Korean ↔ Japanese Teacher bot built natively for LINE! Mentored by **Teacher Kim Hyun-woo (김현우)**, this bot helps Japanese beginners learn Korean naturally through fully bilingual voice interaction, automatic translation, and permanent memory retention.
 
 ## ✨ Features
 
 - **👨‍🏫 Teacher Kim Hyun-woo (김현우)**
   - A professional but warm persona tailored for beginners. He focuses on small, foundational mistakes (particles, conjugations) to ensure a strong language start.
-- **🗣️ Integrated Bilingual Audio**
-  - Sends a voice message in Japanese or Korean, and Kim Hyun-woo intelligently detects the context via **Gemini 2.5**.
-  - Expect natural audio replies mirrored to your target language, powered by the highest quality **Male Neural2 AI voices**.
+- **🔄 Automatic Korean ↔ Japanese Translation**
+  - Write in Korean → get an automatic Japanese translation. Write in Japanese → get an automatic Korean translation. Both directions are always covered.
+- **🗣️ Adaptive Audio + Enhanced Transcripts**
+- **Audio for Voice messages**: Only voice inputs trigger an audio response, keeping text chats clean and fast.
+- **Improved Formatting**: Transcripts now include a clear line break after the translation line for better readability.
+- **One-at-a-time Audio**: Responses provide a single high-quality audio file matching the user's input language (Korean or Japanese).
 - **⚡ Ultra-Concise & Simple**
   - No more verbosity! Responses are strictly brief (1-2 sentences) and utilize elementary-level Korean vocabulary for maximum comprehension.
 - **🧠 Permanent Conversational Memory**

@@ -6,9 +6,10 @@ from pydantic import BaseModel, Field
 from google.cloud import firestore
 
 class FeedbackResponse(BaseModel):
-    message: str = Field(description="The conversational text message to the user, this can contain emojis and formatting.")
-    audio_script: str = Field(description="The clean conversational script to be spoken aloud via TTS. It must be a natural, conversational response exactly matching the message context, but strictly contain NO emojis and NO weird formatting.")
-    language: str = Field(description="The language code to use for TTS, strictly either 'ja' or 'ko'.")
+    message_ko: str = Field(description="韓国語の返信メッセージ。生徒の入力の翻訳と、先生の韓国語での返答を含む。絵文字使用可。")
+    message_ja: str = Field(description="日本語の返信メッセージ。生徒の入力の翻訳と、先生の日本語での返答を含む。絵文字使用可。")
+    audio_script: str = Field(description="音声スクリプト。生徒の入力言語と同じ言語で作成する。韓国語入力ならmessage_koベース、日本語入力ならmessage_jaベース。絵文字・記号・翻訳ラベルを除外し、読み上げ専用の自然な口調に調整。")
+    detected_lang: str = Field(description="生徒の入力言語を 'ko' または 'ja' で返す。")
 
 # GLOBAL VARIABLES: This prevents the 'Client has been closed' error by keeping the connection permanently held in memory.
 try:
@@ -25,30 +26,42 @@ except Exception as e:
     print("Warning: Failed to initialize Firestore:", e)
 
 system_instruction = """
-あなたの名前は「김현우 (キム・ヒョンウ)」です。日本の初級学習者に韓国語を教えている先生です。
-「簡潔・単純・親切」をモットーに、学習者の能力向上をサポートしてください。
+<role>
+あなたは韓国語講師の「김현우（キム・ヒョンウ）」です。日本の初級学習者に対して、LINEでチャットをしている設定です。
+親しみやすく、かつ学習者の意欲を削がない「親切な近所のお兄さん兼先生」のようなトーンで話してください。
+</role>
 
-【最重要指針：簡潔と単純】
-1. **極限まで簡潔に**: 回答は可能な限り短くしてください。長文の解説は不要です。1〜2文程度で、チャットとしてテンポよく返信してください。
-2. **初級レベルの語彙**: 特に韓国語で返答する場合、小学1年生レベルの非常に簡単な単語のみを使用してください。
-3. **適切な厳格さ**: 初級者が間違いやすいミス（助詞、基本的な語尾）を逃さず、かつ簡潔に指摘してください。
-4. **絵文字の制限**: 絵文字は最小限（1メッセージに1回程度）にしてください。
+<core_principles>
+- 自然な会話: テンプレート通りの反応（「すごいですね！」の連発など）を避け、文脈に合った返答をしてください。
+- 簡潔さ: チャットとしてのテンポを重視し、1〜2文で返信します。
+- 指導方針: 学習者の最新のメッセージのみを確認し、不自然な箇所があれば1つだけ優しく教えます。過去のミスは蒸し返しません。
+- 語彙制限: 小学1年生でも理解できる非常に簡単な韓国語のみを使用します。
+- 絵文字: 1メッセージにつき最大1回までとし、感情を補足する程度に使います。
+</core_principles>
 
-【最重要言語ルール】
-生徒が「韓国語」で発話・入力した場合：
-- 応答の言語（language）は必ず「ko」にしてください。
-- 修正や解説も、可能な限り簡単な韓国語で行ってください。
+<language_rules>
+常に韓国語と日本語の両方で返答してください。
 
-生徒が「日本語」で発話・入力した場合：
-- 応答の言語（language）は必ず「ja」にしてください。
-- 解説は日本語で非常に簡潔に行い、簡単な韓国語のフレーズを1つ添える程度にしてください。
+- 生徒が韓国語で話しかけた場合:
+  1. message_jaに、生徒の韓国語入力の日本語訳を「📝 翻訳：...」の形式で冒頭に含めてください。
+  2. message_koには韓国語で先生の返答を書いてください（修正やアドバイスも簡単な韓国語で）。
+  3. message_jaには日本語で先生の返答を書いてください。
 
-【出力の構成：完全な一致】
-- 「message」: LINEに表示されるテキストです。
-- 「audio_script」: LINEのボイスメッセージ用の台本です。
-  - **重要**: 「audio_script」の内容は、原則として「message」の内容と**ほぼ同一**にしてください。
-  - **重要**: ただし、絵文字や記号、読み上げに不要な情報は**完全に除外**してください。
-  - 自然な口調で、短く話してください。
+- 生徒が日本語で話しかけた場合:
+  1. message_koに、生徒の日本語入力の韓国語訳を「📝 번역：...」の形式で冒頭に含めてください。
+  2. message_koには韓国語で先生の返答を書いてください。
+  3. message_jaには日本語で先生の返答を書いてください。
+</language_rules>
+
+<output_format>
+以下のJSON形式で出力してください。必ず4つのフィールドすべてを含めてください。
+{
+  "message_ko": "韓国語の返信メッセージ（絵文字使用可）。日本語入力の場合は冒頭に韓国語訳を含める。",
+  "message_ja": "日本語の返信メッセージ（絵文字使用可）。韓国語入力の場合は冒頭に日本語訳を含める。",
+  "audio_script": "音声スクリプト。生徒の入力言語と同じ言語で作成。韓国語入力ならmessage_koベース、日本語入力ならmessage_jaベース。絵文字・記号・翻訳ラベルを除外し、読み上げ専用の自然な口調に調整。",
+  "detected_lang": "生徒の入力言語。'ko' または 'ja' のいずれかを返す。"
+}
+</output_format>
 """
 
 def get_history_from_db(user_id: str) -> list:
@@ -88,12 +101,18 @@ def save_turn_to_db(user_id: str, user_text: str, model_text: str):
         
     doc_ref.set({"history": history}, merge=True)
 
+def delete_user_history(user_id: str):
+    if not db:
+        return
+    db.collection("KoreanTeacherChats").document(user_id).delete()
+
 def create_chat(user_id: str):
     history = get_history_from_db(user_id)
     return gemini_client_global.chats.create(
-        model='gemini-2.5-flash-lite',
+        model='gemini-2.5-pro',
         config=types.GenerateContentConfig(
             system_instruction=system_instruction,
+            temperature=0.7,
             response_mime_type="application/json",
             response_schema=FeedbackResponse,
         ),
@@ -105,7 +124,7 @@ def evaluate_korean_text(user_id: str, user_text: str) -> dict:
     response = chat.send_message(f"生徒のメッセージ：「{user_text}」")
     
     data = json.loads(response.text)
-    save_turn_to_db(user_id, f"テキスト：「{user_text}」", data["message"])
+    save_turn_to_db(user_id, f"生徒：{user_text}", f"先生(KO)：{data['message_ko']} | 先生(JA)：{data['message_ja']}")
     return data
 
 def evaluate_korean_audio(user_id: str, audio_path: str, mime_type: str = "audio/mp4") -> dict:
@@ -117,5 +136,5 @@ def evaluate_korean_audio(user_id: str, audio_path: str, mime_type: str = "audio
     response = chat.send_message([uploaded_file, "生徒から音声メッセージが届きました！内容を確認して返信してください。"])
     
     data = json.loads(response.text)
-    save_turn_to_db(user_id, "（音声メッセージが送信されました）", data["message"])
+    save_turn_to_db(user_id, "（音声メッセージが送信されました）", f"先生(KO)：{data['message_ko']} | 先生(JA)：{data['message_ja']}")
     return data

@@ -17,7 +17,10 @@ from linebot.v3.messaging import (
 from linebot.v3.webhooks import (
     MessageEvent,
     TextMessageContent,
-    AudioMessageContent
+    AudioMessageContent,
+    UnfollowEvent,
+    MemberLeftEvent,
+    LeaveEvent
 )
 from dotenv import load_dotenv
 from google.cloud import texttospeech
@@ -58,22 +61,117 @@ async def callback(request: Request):
         raise HTTPException(status_code=400, detail="Invalid signature")
     return "OK"
 
+@handler.add(UnfollowEvent)
+def handle_unfollow(event):
+    user_id = event.source.user_id
+    print(f"User {user_id} unfollowed/blocked. Clearing history.")
+    gemini_client.delete_user_history(user_id)
+
+@handler.add(MemberLeftEvent)
+def handle_member_left(event):
+    # event.left.members is a list of users who left
+    for member in event.left.members:
+        user_id = member.user_id
+        if user_id:
+            print(f"User {user_id} left group/room. Clearing history.")
+            gemini_client.delete_user_history(user_id)
+
+@handler.add(LeaveEvent)
+def handle_bot_leave(event):
+    # The bot was removed from a group or room.
+    source_type = event.source.type
+    if source_type == 'group':
+        chat_id = event.source.group_id
+    elif source_type == 'room':
+        chat_id = event.source.room_id
+    else:
+        chat_id = event.source.user_id
+    
+    print(f"Bot left {source_type} {chat_id}. Clearing history for this context.")
+    # For simplicity, we use the chat_id as user_id in common context, 
+    # but here we should clear the context ID.
+    gemini_client.delete_user_history(chat_id)
+
+def generate_tts_audio(text: str, lang: str, output_id: str) -> tuple:
+    """Generate TTS audio file and return (url, duration_ms).
+    
+    Args:
+        text: The clean script text for TTS.
+        lang: 'ko' or 'ja'.
+        output_id: Unique identifier for the output file.
+    
+    Returns:
+        Tuple of (audio_url, duration_ms).
+    """
+    mp3_path = f"/tmp/{output_id}_{lang}.mp3"
+    m4a_path = f"/tmp/{output_id}_{lang}.m4a"
+    
+    tts_client = texttospeech.TextToSpeechClient()
+    synthesis_input = texttospeech.SynthesisInput(text=text)
+    
+    if lang == 'ko':
+        voice = texttospeech.VoiceSelectionParams(
+            language_code="ko-KR",
+            name="ko-KR-Neural2-C"
+        )
+    else:
+        voice = texttospeech.VoiceSelectionParams(
+            language_code="ja-JP",
+            name="ja-JP-Neural2-D"
+        )
+
+    audio_config = texttospeech.AudioConfig(
+        audio_encoding=texttospeech.AudioEncoding.MP3
+    )
+    
+    tts_response = tts_client.synthesize_speech(
+        input=synthesis_input, voice=voice, audio_config=audio_config
+    )
+    
+    with open(mp3_path, "wb") as out:
+        out.write(tts_response.audio_content)
+    
+    # Convert to m4a using ffmpeg
+    subprocess.run(["ffmpeg", "-y", "-i", mp3_path, "-c:a", "aac", "-b:a", "64k", m4a_path], check=True)
+    
+    # Get audio duration for LINE API
+    result = subprocess.run(
+        ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", m4a_path],
+        capture_output=True, text=True, check=True
+    )
+    duration_ms = int(float(result.stdout.strip()) * 1000)
+    
+    audio_url = f"{BASE_URL}/audio/{output_id}_{lang}.m4a"
+    return audio_url, duration_ms
+
+def _format_message(text: str) -> str:
+    """Insert a line break after the 📝 translation line if present."""
+    if '📝' in text:
+        lines = text.split('\n', 1)
+        if len(lines) == 2:
+            return lines[0] + '\n\n' + lines[1]
+    return text
+
 @handler.add(MessageEvent, message=TextMessageContent)
 def handle_text_message(event):
     user_id = event.source.user_id
     user_text = event.message.text
     try:
-        # Get feedback from Gemini (Structured JSON)
+        # Get feedback from Gemini (Structured JSON with bilingual fields)
         feedback_data = gemini_client.evaluate_korean_text(user_id, user_text)
-        feedback_msg = feedback_data["message"]
         
-        # Send reply back to user
+        # Build bilingual text transcript with line breaks after translations
+        msg_ko = _format_message(feedback_data['message_ko'])
+        msg_ja = _format_message(feedback_data['message_ja'])
+        transcript = f"🇰🇷 {msg_ko}\n\n🇯🇵 {msg_ja}"
+        
+        # Text input: reply with text only (no audio)
         with ApiClient(configuration) as api_client:
             line_bot_api = MessagingApi(api_client)
             line_bot_api.reply_message(
                 ReplyMessageRequest(
                     reply_token=event.reply_token,
-                    messages=[TextMessage(text=feedback_msg)]
+                    messages=[TextMessage(text=transcript)]
                 )
             )
     except Exception as e:
@@ -103,62 +201,27 @@ def handle_audio_message(event):
             temp_file_path = tp.name
 
     try:
-        # Get feedback from Gemini (Structured JSON)
+        # Get feedback from Gemini (Structured JSON with bilingual fields)
         feedback_data = gemini_client.evaluate_korean_audio(user_id, temp_file_path, mime_type="audio/mp4")
-        feedback_msg = feedback_data["message"]
-        feedback_script = feedback_data["audio_script"]
-        feedback_lang = feedback_data["language"]
         
-        # 1. Generate text-to-speech mp3 using Google Cloud TTS
-        mp3_path = f"/tmp/{message_id}_out.mp3"
-        m4a_path = f"/tmp/{message_id}_out.m4a"
+        # Build bilingual text transcript
+        msg_ko = _format_message(feedback_data['message_ko'])
+        msg_ja = _format_message(feedback_data['message_ja'])
+        transcript = f"🇰🇷 {msg_ko}\n\n🇯🇵 {msg_ja}"
         
-        tts_client = texttospeech.TextToSpeechClient()
-        synthesis_input = texttospeech.SynthesisInput(text=feedback_script)
+        # Generate TTS audio in the user's input language
+        lang = feedback_data['detected_lang']
+        audio_url, audio_duration = generate_tts_audio(feedback_data['audio_script'], lang, message_id)
         
-        if feedback_lang == 'ko':
-            voice = texttospeech.VoiceSelectionParams(
-                language_code="ko-KR",
-                name="ko-KR-Neural2-C"
-            )
-        else:
-            voice = texttospeech.VoiceSelectionParams(
-                language_code="ja-JP",
-                name="ja-JP-Neural2-D"
-            )
-
-        audio_config = texttospeech.AudioConfig(
-            audio_encoding=texttospeech.AudioEncoding.MP3
-        )
-        
-        tts_response = tts_client.synthesize_speech(
-            input=synthesis_input, voice=voice, audio_config=audio_config
-        )
-        
-        with open(mp3_path, "wb") as out:
-            out.write(tts_response.audio_content)
-        
-        # 2. Convert to m4a using ffmpeg
-        subprocess.run(["ffmpeg", "-y", "-i", mp3_path, "-c:a", "aac", "-b:a", "64k", m4a_path], check=True)
-        
-        # 3. Get audio duration for LINE API
-        result = subprocess.run(
-            ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", m4a_path],
-            capture_output=True, text=True, check=True
-        )
-        duration_ms = int(float(result.stdout.strip()) * 1000)
-        
-        # 4. Construct Public URL
-        audio_url = f"{BASE_URL}/audio/{message_id}_out.m4a"
-        
-        # Send reply back to user (ONLY Audio as requested)
+        # Send reply: text transcript + audio
         with ApiClient(configuration) as api_client:
             line_bot_api = MessagingApi(api_client)
             line_bot_api.reply_message(
                 ReplyMessageRequest(
                     reply_token=event.reply_token,
                     messages=[
-                        AudioMessage(original_content_url=audio_url, duration=duration_ms)
+                        TextMessage(text=transcript),
+                        AudioMessage(original_content_url=audio_url, duration=audio_duration)
                     ]
                 )
             )
@@ -176,9 +239,10 @@ def handle_audio_message(event):
         # Clean up the input temporary file
         if os.path.exists(temp_file_path):
             os.remove(temp_file_path)
-        # Note: We do not delete mp3_path or m4a_path here immediately because LINE servers need to download it!
+        # Note: We do not delete mp3/m4a output files here because LINE servers need to download them!
         # Cloud Run ephemeral file system cleans itself upon instance termination.
 
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
+
