@@ -14,20 +14,55 @@ An incredibly dynamic, AI-powered interactive Korean ↔ Japanese Teacher bot bu
 - **One-at-a-time Audio**: Responses provide a single high-quality audio file matching the user's input language (Korean or Japanese).
 - **⚡ Ultra-Concise & Simple**
   - No more verbosity! Responses are strictly brief (1-2 sentences) and utilize elementary-level Korean vocabulary for maximum comprehension.
-- **🧠 Permanent Conversational Memory**
+- **🧠 Permanent Conversational Memory & Preferences**
   - Natively tracks users across individual `user_id`s, archiving their conversational progression into **Google Cloud Firestore**. Your teacher remembers what you chatted about yesterday!
+  - Explicitly saves and respects specific user instructions over time (e.g., "Speak to me in polite language", "I'm a beginner") to customize the experience persistently.
 - **☁️ Serverless Cloud Native**
   - Container-based execution architected perfectly for **Google Cloud Run**, meaning incredibly fast deployments that gracefully scale to zero when inactive!
 
 ## ⚙️ Core Technology Stack
 
 - **[FastAPI](https://fastapi.tiangolo.com/)**: The incredibly fast asynchronous backend router processing incoming LINE Webhook events.
-- **[Gemini AI SDK](https://ai.google.dev/)**: Powered purely by `gemini-2.5-flash-lite` utilizing structural JSON directive parsing.
+- **[Gemini AI SDK](https://ai.google.dev/)**: Powered by the highly intelligent `gemini-3.5-flash` model utilizing structural JSON directive parsing.
 - **[LINE Messaging API](https://developers.line.biz/en/docs/messaging-api/)**: The native pipeline allowing users to practice language intuitively via standard social text/voice messaging.
 - **Google Cloud Suite**:
   - `Cloud Run`: Serverless hosting
   - `Firestore`: Rapid NoSQL contextual memory
   - `Cloud Text-to-Speech`: High-fidelity Neural2 Audio Mapping
+
+## 🏗️ Architecture Flow
+
+```mermaid
+graph TD
+    User([User LINE App]) -->|Text / Voice Message| LineAPI[LINE Messaging API]
+    LineAPI -->|Webhook Event| FastAPI[FastAPI Cloud Run]
+    
+    FastAPI -->|Start Background Task| Worker((Background Thread))
+    FastAPI -->|200 OK| LineAPI
+    
+    Worker -->|Fetch History| Firestore[(Firestore Database)]
+    Worker -->|Download blob if voice| LineAPI
+    
+    Worker -->|Prompt + Context + Permanent Instructions| Gemini[Gemini API]
+    Gemini <-->|Tool Call: WebSearch| WebSearch[Naver / Kakao / Google API]
+    Gemini <-->|Tool Call: Memory Instructions| Firestore
+    
+    Gemini -->|Structured JSON Response| Worker
+    Worker -->|Save Context| Firestore
+    
+    Worker -->|Synthesize Voice if audio| TTS[Google Cloud TTS]
+    TTS -->|Audio m4a| Worker
+    
+    Worker -->|Format Final Messages| LineAPI
+    LineAPI -->|Reply / Push Message| User
+```
+
+## 📁 Folder Structure
+
+- `app/` - Contains the Python application code (`main.py`, `gemini_client.py`, `web_search.py`).
+- `Dockerfile` - Container image configuration.
+- `deploy.ps1` - PowerShell script for deploying to Cloud Run.
+- `requirements.txt` - Python dependencies.
 
 ## 🚀 Quickstart Deployment
 

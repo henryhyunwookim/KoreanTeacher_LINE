@@ -43,6 +43,7 @@ if ($envString) {
         --source . `
         --region $Region `
         --allow-unauthenticated `
+        --no-cpu-throttling `
         --set-env-vars $envString `
         --quiet
 } else {
@@ -50,6 +51,7 @@ if ($envString) {
         --source . `
         --region $Region `
         --allow-unauthenticated `
+        --no-cpu-throttling `
         --quiet
 }
 
