@@ -234,13 +234,22 @@ def format_assistant_response(feedback_data: dict, is_audio: bool) -> list:
                 )
     
     # If student received a Korean phrase, offer a button to ask for pronunciation if not already present
-    if korean_phrase and not any("発音" in getattr(item.action, 'label', '') for item in quick_reply_items):
+    is_advanced = feedback_data.get("user_proficiency") == "advanced"
+    has_pronunciation_btn = any("発音" in getattr(item.action, 'label', '') or "발음" in getattr(item.action, 'label', '') for item in quick_reply_items)
+    if korean_phrase and not has_pronunciation_btn:
         if len(quick_reply_items) < 4:
-            quick_reply_items.append(
-                QuickReplyItem(
-                    action=MessageAction(label="発音を聞かせて🔊", text=f"『{korean_phrase[:12]}』の発音を聞かせて！")
+            if is_advanced:
+                quick_reply_items.append(
+                    QuickReplyItem(
+                        action=MessageAction(label="발음 듣기🔊", text=f"『{korean_phrase[:12]}』 발음 들려줘!")
+                    )
                 )
-            )
+            else:
+                quick_reply_items.append(
+                    QuickReplyItem(
+                        action=MessageAction(label="発音を聞かせて🔊", text=f"『{korean_phrase[:12]}』の発音を聞かせて！")
+                    )
+                )
 
     quick_reply = QuickReply(items=quick_reply_items) if quick_reply_items else None
     
@@ -249,15 +258,21 @@ def format_assistant_response(feedback_data: dict, is_audio: bool) -> list:
         
     # Generate audio TTS:
     # 1. Always generate if user sent an audio message
-    # 2. Or generate if the user specifically asked for pronunciation ("発音を聞かせて" / "発音" in audio_script)
+    # 2. Or generate if the user specifically asked for pronunciation ("発音を聞かせて" / "発音" / "발음" in audio_script or text)
     audio_script = feedback_data.get("audio_script", "").strip()
     detected_lang = feedback_data.get("detected_lang", "ko")
+    user_text_val = feedback_data.get("user_text", "")
     
     # Determine audio language: if korean_phrase is present, default audio to Korean for listening practice
     audio_lang = "ko" if korean_phrase or detected_lang == "ja" else detected_lang
     
     # Generate audio if it was a voice message OR if the user asked to hear pronunciation
-    should_send_audio = is_audio or (bool(audio_script) and ("発音" in chat_reply or "🔊" in chat_reply or "発音" in feedback_data.get("user_text", "")))
+    should_send_audio = is_audio or (
+        bool(audio_script) and (
+            "発音" in chat_reply or "🔊" in chat_reply or "발음" in chat_reply or
+            "発音" in user_text_val or "발음" in user_text_val
+        )
+    )
     
     if should_send_audio and audio_script:
         try:

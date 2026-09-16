@@ -10,6 +10,15 @@ An AI-powered interactive Korean learning partner and friendly guide built nativ
 
 - **👨‍🏫 Teacher Kim Hyun-woo (김현우)**
   - A friendly, encouraging native Korean teacher from Seoul who loves Japan. Acts like a supportive older brother (ヒョヌ/オッパ) who celebrates your progress and chats naturally.
+- **🤝 Dynamic Human-Like Conversation & Anti-Repetition**
+  - Truly conversational and alive: never outputs identical canned explanations or duplicate phrase cards when the user repeats the same input or greeting.
+  - Recognizes repeated practice ("대박! You used the phrase right away!👏") and provides fresh variations, nuanced tips, or moves the dialogue forward naturally.
+- **🎯 Persistent Proficiency Level Adaptation**
+  - Remembers each user's proficiency level (`beginner`, `intermediate`, `advanced`) in **Firestore** and dynamically adjusts tone, language ratio, and depth:
+    - **Beginner (初級)**: ~80% Japanese, friendly Katakana phonetic hints (liaison/sound change notes), high-frequency survival phrases, Sino-Korean cognates.
+    - **Intermediate (中級)**: 50/50 Korean/Japanese blend, natural native collocations, polishes awkward particles, deep dive into 반말 (informal) vs 존댓말 (polite) nuances and trending slang.
+    - **Advanced (上級)**: 80–100% Korean immersion, idiomatic expressions, proverbs (속담), four-character idioms (사자성어), cultural and trending topics; Katakana hints omitted.
+  - Automatically infers proficiency from user inputs or respects explicit declarations ("I am a beginner", "I have TOPIK level 5").
 - **💬 Natural Conversational Immersion (No Robotic Grading)**
   - Replaces rigid "grading/error reports" with organic, supportive conversation. Corrections and natural native nuances are seamlessly woven into chat reactions.
 - **✨ Structured Korean Expression Cards**
@@ -24,7 +33,7 @@ An AI-powered interactive Korean learning partner and friendly guide built nativ
 - **🔍 Real-Time Korean Trend & Travel Search**
   - Uses custom function calling tools integrated with Naver Search (Blog & Web), Kakao/Daum Search, and Google Custom Search to provide accurate, up-to-date recommendations for cafes, restaurants, tourist spots, and slang.
 - **🧠 Permanent Conversational Memory & Preferences**
-  - Natively tracks users across individual `user_id`s with **Google Cloud Firestore**. Remembers personal preferences, topics discussed, learning goals, and custom instructions.
+  - Natively tracks users across individual `user_id`s with **Google Cloud Firestore**. Remembers personal preferences, topics discussed, learning goals, proficiency levels, and custom instructions.
 - **☁️ Serverless Cloud Native**
   - Container-based execution architected for **Google Cloud Run**, providing scalable deployments that scale to zero when inactive.
 
@@ -41,6 +50,66 @@ An AI-powered interactive Korean learning partner and friendly guide built nativ
 | **Speech & Audio** | [Google Cloud Text-to-Speech](https://cloud.google.com/text-to-speech) + `ffmpeg` | Neural2 speech synthesis (`ko-KR-Neural2-C` & `ja-JP-Neural2-D`) and AAC conversion |
 | **Search Integrations** | [Naver Developers](https://developers.naver.com/) & [Kakao Developers](https://developers.kakao.com/) | Real-time Korean web, blog, and local info retrieval |
 | **Hosting & Container** | [Google Cloud Run](https://cloud.google.com/run) & Docker | Fully managed serverless container runtime |
+
+---
+
+## 📱 Visual System & User Experience Preview
+
+### 1. Interactive LINE Chat Experience (Beginner & Repetition Handling)
+
+```
+┌────────────────────────────────────────────────────────┐
+│ 🟢 LINE Chat: Kim Hyun-woo (キム・ヒョンウ先生)        │
+├────────────────────────────────────────────────────────┤
+│                                                        │
+│ [Student] 👤                                          │
+│ 今日めっちゃ疲れた〜                                   │
+│                                                        │
+│ 👨‍🏫 [Teacher Kim]                                      │
+│ 今日もお疲れ様でした！本当によく頑張りましたね✨        │
+│ 韓国語では『오늘 너무 피곤했어요~』って言います。     │
+│ 温かいお風呂に入ってゆっくり休んでくださいね！         │
+│ 明日は何時に起きる予定ですか？                         │
+│                                                        │
+│ ┌────────────────────────────────────────────────────┐ │
+│ │ ✨ 今日のキー表現：                                │ │
+│ │ 『 오늘 너무 피곤했어요 』                         │ │
+│ │ 🗣️ 発音：オヌル ノム ピゴネッソヨ                   │ │
+│ │ 🇯🇵 意味：今日すごく疲れました                       │ │
+│ └────────────────────────────────────────────────────┘ │
+│                                                        │
+│ [Student] 👤                                          │
+│ 오늘 너무 피곤했어요                                   │
+│                                                        │
+│ 👨‍🏫 [Teacher Kim]                                      │
+│ 대박! 早速使ってくれましたね！👏 発音もバッチリ伝わって│
+│ きます！友達同士のタメ口なら『오늘 너무 피곤했어』     │
+│ って末尾を軽く言えばOKですよ😊 今夜はぐっすり眠れそう? │
+│                                                        │
+│ ┌────────────────────────────────────────────────────┐ │
+│ │ 🔊 音声メッセージ (m4a) [▶ 0:02 / 0:02]            │ │
+│ └────────────────────────────────────────────────────┘ │
+│                                                        │
+├────────────────────────────────────────────────────────┤
+│ 💡 Quick Replies:                                      │
+│ [네! (はい!)]  [タメ口では？]  [発音を聞かせて🔊]      │
+└────────────────────────────────────────────────────────┘
+```
+
+### 2. Multi-Level Proficiency Adaptive Behavior
+
+```mermaid
+graph LR
+    subgraph Levels ["🎯 Student Proficiency Tiers"]
+        B["🌱 Beginner (初級)<br/>• 70-80% Japanese<br/>• Katakana phonetics + liaison notes<br/>• Short survival phrases<br/>• Sino-Korean cognates"]
+        I["🌿 Intermediate (中級)<br/>• 50% Korean / 50% Japanese<br/>• Polishes awkward particles & phrases<br/>• Banmal (タメ口) vs Jondaetmal<br/>• Colloquial slang & K-drama idioms"]
+        A["🌳 Advanced (上級)<br/>• 80-100% Korean immersion<br/>• Idiomatic expressions & Proverbs (속담)<br/>• 4-Character idioms (사자성어)<br/>• Phonetic katakana omitted"]
+    end
+
+    UserMsg["📩 User LINE Message<br/>(Text / Voice)"] --> Engine["🧠 Contextual Analyzer & History"]
+    Engine --> Levels
+    Levels --> Output["💬 Dynamic Tailored LINE Response<br/>+ Audio & Quick Replies"]
+```
 
 ---
 
