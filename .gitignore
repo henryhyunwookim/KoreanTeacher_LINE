@@ -19,6 +19,17 @@ token.json
 service_account*.json
 
 # Testing & Caching
+tests/
+test/
+__tests__/
+spec/
+*.test.*
+*.spec.*
+test_*.py
+*_test.py
+conftest.py
+test.db
+*.sqlite3
 .pytest_cache/
 .coverage
 htmlcov/

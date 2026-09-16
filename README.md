@@ -32,8 +32,9 @@ An AI-powered interactive Korean learning partner and friendly guide built nativ
   - Actively leverages the ~70% shared Sino-Korean vocabulary (e.g. 약속 = 約束, 무료 = 無料) to build immediate confidence for Japanese speakers.
 - **🔍 Real-Time Korean Trend & Travel Search**
   - Uses custom function calling tools integrated with Naver Search (Blog & Web), Kakao/Daum Search, and Google Custom Search to provide accurate, up-to-date recommendations for cafes, restaurants, tourist spots, and slang.
-- **🧠 Permanent Conversational Memory & Preferences**
-  - Natively tracks users across individual `user_id`s with **Google Cloud Firestore**. Remembers personal preferences, topics discussed, learning goals, proficiency levels, and custom instructions.
+- **🧠 Short-Term & Long-Term Memory Architecture**
+  - **Short-Term Context**: Retains recent turns per user (sliding window of 12 turns / 6 message pairs injected into active Gemini chat context) to maintain fluid dialogue continuity, recognize repeated practice, and prevent canned answers.
+  - **Long-Term Memory**: Automatically persists user proficiency levels and explicitly saves custom instructions/preferences (e.g. learning goals, nicknames, favorite idols) to **Google Cloud Firestore**, restoring them seamlessly across sessions.
 - **☁️ Serverless Cloud Native**
   - Container-based execution architected for **Google Cloud Run**, providing scalable deployments that scale to zero when inactive.
 
@@ -193,6 +194,19 @@ Key workspace files:
 | `/callback` | `POST` | LINE Messaging API webhook endpoint. Validates signature (`X-Line-Signature`) and handles text, audio, unfollow, and room leave events. |
 | `/health` | `GET` | Health check and diagnostics endpoint. Returns service status, active Gemini model, base URL, and search integration statuses. |
 | `/audio/{filename}` | `GET` | Serves synthesized `.m4a` speech files for LINE `AudioMessage` playback. |
+
+---
+
+## 🧠 Memory Architecture (Short-Term & Long-Term)
+
+To ensure personalized, high-value learning over extended periods, the bot incorporates a dual-tier memory system per user ID:
+
+| Tier | Scope & Storage | How It Works |
+|---|---|---|
+| **Short-Term Context** | In-flight turns (Firestore / Cache) | Keeps a sliding window of the **12 most recent turns (6 conversational exchanges)** directly in the active Gemini context. Evaluates dialogue flow to detect whether the user is repeating a message (triggering alternative phrasing) or practicing a taught expression (triggering praise). |
+| **Long-Term Memory** | Permanent user profile (Firestore) | Persists the user's **proficiency level** (`beginner`, `intermediate`, `advanced`) and explicit **custom preferences/instructions** (e.g., nicknames, learning goals, favorite artists, speech preferences). These are injected into the system instruction on every turn across all sessions. |
+
+*Privacy note: If a user unfollows or blocks the bot, their stored chat history and profile are automatically purged from Firestore.*
 
 ---
 
