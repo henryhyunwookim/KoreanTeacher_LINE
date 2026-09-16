@@ -19,6 +19,9 @@ from linebot.v3.messaging import (
     ShowLoadingAnimationRequest,
     TextMessage,
     AudioMessage,
+    QuickReply,
+    QuickReplyItem,
+    MessageAction,
     MessagingApiBlob
 )
 from linebot.v3.webhooks import (
@@ -50,7 +53,7 @@ app = FastAPI()
 # Validate that the necessary environment variables are set
 LINE_CHANNEL_SECRET = os.environ.get("LINE_CHANNEL_SECRET")
 LINE_CHANNEL_ACCESS_TOKEN = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN")
-BASE_URL = os.environ.get("BASE_URL", "https://korean-teacher-bot-573512424011.asia-northeast1.run.app")
+BASE_URL = os.environ.get("BASE_URL", "http://localhost:8080")
 
 if not LINE_CHANNEL_SECRET or not LINE_CHANNEL_ACCESS_TOKEN:
     logger.warning("LINE_CHANNEL_SECRET or LINE_CHANNEL_ACCESS_TOKEN is not set.")
@@ -63,7 +66,7 @@ def health_check():
     """Health check endpoint for diagnostics."""
     return {
         "status": "ok",
-        "model": os.environ.get("GEMINI_MODEL", "gemini-3.5-flash"),
+        "model": os.environ.get("GEMINI_MODEL", "gemini-3.8-flash"),
         "base_url": BASE_URL,
         "has_naver": bool(os.environ.get("NAVER_CLIENT_ID")),
         "has_kakao": bool(os.environ.get("KAKAO_REST_API_KEY")),
@@ -188,37 +191,75 @@ def download_audio_content(message_id: str) -> str:
             return tp.name
 
 def format_assistant_response(feedback_data: dict, is_audio: bool) -> list:
-    """Format AssistantResponse into LINE message objects."""
+    """Format AssistantResponse into friendly LINE message objects with pronunciation hints and quick replies."""
     messages = []
     
-    translation = feedback_data.get("translation_text", "").strip()
-    corrections = feedback_data.get("corrections_text", "").strip()
-    response = feedback_data.get("response_text", "").strip()
+    chat_reply = feedback_data.get("chat_reply", "").strip()
+    korean_phrase = feedback_data.get("korean_phrase", "").strip()
+    pronunciation_hint = feedback_data.get("pronunciation_hint", "").strip()
+    phrase_meaning = feedback_data.get("phrase_meaning", "").strip()
+    raw_quick_replies = feedback_data.get("quick_replies", [])
+    
+    # Fallback compatibility with previous schema if needed
+    if not chat_reply:
+        chat_reply = feedback_data.get("response_text", "").strip()
     
     transcript_parts = []
-    if translation:
-        transcript_parts.append(translation)
+    if chat_reply:
+        transcript_parts.append(chat_reply)
+        
+    # Append structured practical Korean phrase card if taught
+    if korean_phrase:
+        card_lines = [f"✨ 今日のキー表現：\n『 {korean_phrase} 』"]
+        if pronunciation_hint:
+            card_lines.append(f"🗣️ 発音：{pronunciation_hint}")
+        if phrase_meaning:
+            card_lines.append(f"🇯🇵 意味：{phrase_meaning}")
+        transcript_parts.append("\n".join(card_lines))
+        
+    full_text = "\n\n".join(transcript_parts)
     
-    if response:
-        if translation or corrections:
-            lang = feedback_data.get("detected_lang", "ja")
-            prefix = "🇰🇷" if lang == "ja" else "🇯🇵"
-            transcript_parts.append(f"{prefix} {response}")
-        else:
-            transcript_parts.append(response)
-            
-    if corrections:
-        transcript_parts.append(f"💡 {corrections}")
+    # Build Quick Reply items (max 13 allowed by LINE, keep it to 2-4 clean options)
+    quick_reply_items = []
+    if raw_quick_replies and isinstance(raw_quick_replies, list):
+        for qr in raw_quick_replies:
+            qr_text = str(qr).strip()
+            if qr_text:
+                # LINE QuickReply text & label max is 20 characters
+                label = qr_text[:20]
+                quick_reply_items.append(
+                    QuickReplyItem(
+                        action=MessageAction(label=label, text=label)
+                    )
+                )
+    
+    # If student received a Korean phrase, offer a button to ask for pronunciation if not already present
+    if korean_phrase and not any("発音" in getattr(item.action, 'label', '') for item in quick_reply_items):
+        if len(quick_reply_items) < 4:
+            quick_reply_items.append(
+                QuickReplyItem(
+                    action=MessageAction(label="発音を聞かせて🔊", text=f"『{korean_phrase[:12]}』の発音を聞かせて！")
+                )
+            )
+
+    quick_reply = QuickReply(items=quick_reply_items) if quick_reply_items else None
+    
+    if full_text:
+        messages.append(TextMessage(text=full_text, quick_reply=quick_reply))
         
-    transcript = "\n\n".join(transcript_parts)
-    if transcript:
-        messages.append(TextMessage(text=transcript))
-        
-    # Generate audio TTS if input was audio and script is available
+    # Generate audio TTS:
+    # 1. Always generate if user sent an audio message
+    # 2. Or generate if the user specifically asked for pronunciation ("発音を聞かせて" / "発音" in audio_script)
     audio_script = feedback_data.get("audio_script", "").strip()
-    audio_lang = feedback_data.get("detected_lang", "ja")
+    detected_lang = feedback_data.get("detected_lang", "ko")
     
-    if is_audio and audio_script:
+    # Determine audio language: if korean_phrase is present, default audio to Korean for listening practice
+    audio_lang = "ko" if korean_phrase or detected_lang == "ja" else detected_lang
+    
+    # Generate audio if it was a voice message OR if the user asked to hear pronunciation
+    should_send_audio = is_audio or (bool(audio_script) and ("発音" in chat_reply or "🔊" in chat_reply or "発音" in feedback_data.get("user_text", "")))
+    
+    if should_send_audio and audio_script:
         try:
             audio_id = str(uuid.uuid4())
             audio_url, audio_duration = generate_tts_audio(audio_script, audio_lang, audio_id)
@@ -276,6 +317,7 @@ def process_text_in_background(user_id: str, reply_token: str, user_text: str, s
         # Invoke Gemini Client
         logger.info(f"[TEXT] Calling Gemini for user {user_id}...")
         feedback_data = gemini_client.evaluate_korean_text(user_id, user_text)
+        feedback_data["user_text"] = user_text
         logger.info(f"[TEXT] Gemini response received for user {user_id}.")
         
         # Format response messages

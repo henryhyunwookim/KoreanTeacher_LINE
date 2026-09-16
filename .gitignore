@@ -1,7 +1,40 @@
+# Python & virtual environment
 __pycache__/
-*.pyc
-.env
-env.yaml
+*.py[cod]
+*$py.class
 venv/
 .venv/
+env/
+ENV/
+
+# Secrets and environment files
+.env
+.env.*
+env.yaml
+*.pem
+*.key
+*.token
+credentials.json
+token.json
+service_account*.json
+
+# Testing & Caching
 .pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# Logs and temporary files
+*.log
+tmp/
+temp/
+*.tmp
+
+# Operating system & Editor files
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+.idea/
+.vscode/
