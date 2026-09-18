@@ -160,28 +160,36 @@ flowchart TD
 ```
 KoreanTeacher_LINE/
 ├── app/
-│   ├── __init__.py           # パッケージ初期化ファイル
-│   ├── gemini_client.py      # Geminiモデル設定、ペルソナプロンプト、Firestore記憶機能、検索ツール
-│   ├── main.py               # FastAPIアプリ、LINE Webhookハンドラー、TTSパイプライン、バックグラウンド処理
-│   └── web_search.py         # Naver、Kakao、Googleカスタム検索の連携モジュール
+│   ├── __init__.py               # パッケージ初期化ファイル
+│   ├── config.py                 # マルチPC設定管理・Secret Manager解決モジュール
+│   ├── gemini_client.py          # Geminiモデル設定、ペルソナプロンプト、Firestore記憶機能、検索ツール
+│   ├── main.py                   # FastAPIアプリ、LINE Webhookハンドラー、TTSパイプライン、バックグラウンド処理
+│   ├── memory.py                 # 2層GCSステート永続化・分離監査ログモジュール
+│   └── web_search.py             # Naver、Kakao、Googleカスタム検索の連携モジュール
 ├── docs/
 │   └── naver_kakao_api_guide.md  # Naver & Kakao APIキー取得手順書
-├── .dockerignore             # Dockerイメージビルド時の除外設定
-├── .gcloudignore             # Cloud Buildパッケージング時の除外設定
-├── .gitignore                # Git管理対象外設定 (.env, venv等)
-├── deploy.ps1                # Cloud Run自動デプロイ用PowerShellスクリプト
-├── Dockerfile                # Python 3.11-slim + ffmpeg 構成のコンテナ定義
-├── README.md                 # 英語ドキュメント
-├── README.ja.md              # 日本語ドキュメント（本ファイル）
-└── requirements.txt          # Python依存ライブラリ一覧
+├── scripts/
+│   ├── deploy.ps1                # Cloud Run自動デプロイ用PowerShellスクリプト
+│   └── sync_secrets.py           # マルチPCシークレット同期・GCS初期化スクリプト
+├── .dockerignore                 # Dockerイメージビルド時の除外設定
+├── .env.example                  # 環境変数テンプレート・設定リファレンス
+├── .gcloudignore                 # Cloud Buildパッケージング時の除外設定
+├── .gitignore                    # Git管理対象外設定 (.env, venv等)
+├── Dockerfile                    # Python 3.11-slim + ffmpeg 構成のコンテナ定義
+├── README.md                     # 英語ドキュメント
+├── README.ja.md                  # 日本語ドキュメント（本ファイル）
+└── requirements.txt              # Python依存ライブラリ一覧
 ```
 
 主なファイル:
 - [app/main.py](app/main.py): FastAPIのエンドポイント定義、LINE Webhook受信処理、音声ストリーミング
+- [app/config.py](app/config.py): Secret Manager SDK、`gcloud` CLI、環境変数を透過的にフォールバック解決するデュアルモード設定管理
 - [app/gemini_client.py](app/gemini_client.py): `gemini-3.8-flash` の設定、Pydanticレスポンスモデル、プロンプト、Firestore永続化
+- [app/memory.py](app/memory.py): Google Cloud Storage を用いた2層ステート永続化とCloud Logging向け構造化ログ出力
 - [app/web_search.py](app/web_search.py): Naverブログ/Web、Kakaoブログ/Web、Googleカスタム検索の実行モジュール
 - [docs/naver_kakao_api_guide.md](docs/naver_kakao_api_guide.md): NaverおよびKakaoの開発者登録とAPIキー取得方法の解説
-- [deploy.ps1](deploy.ps1): Google Cloud Runへ自動デプロイするスクリプト
+- [scripts/deploy.ps1](scripts/deploy.ps1): Google Cloud Runへ自動デプロイするスクリプト
+- [scripts/sync_secrets.py](scripts/sync_secrets.py): マルチPCシークレット同期およびゼロセットアップ診断ツール
 - [Dockerfile](Dockerfile): 非rootユーザー実行・ffmpeg導入済みの本番用コンテナ定義
 - [requirements.txt](requirements.txt): 必要パッケージ一覧
 
@@ -274,19 +282,19 @@ KoreanTeacher_LINE は、ローカルPC（Windows/macOS/Linux）やGoogle Cloud 
 
 ---
 
-## 🛠️ マルチPC管理ツール (`sync_secrets.py`)
+## 🛠️ マルチPC管理ツール (`scripts/sync_secrets.py`)
 
-同梱の `sync_secrets.py` スクリプトにより、どのマシンからでもクラウド連携のテストやシークレット登録が行えます：
+同梱の [scripts/sync_secrets.py](scripts/sync_secrets.py) スクリプトにより、どのマシンからでもクラウド連携のテストやシークレット登録が行えます：
 
 ```bash
 # 1. ゼロセットアップ疎通確認（Secret Manager および GCS へのアクセスをドライラン検証）
-python sync_secrets.py --dry-run
+python scripts/sync_secrets.py --dry-run
 
 # 2. Cloud Storage バケットの自動作成・確認
-python sync_secrets.py --init-bucket
+python scripts/sync_secrets.py --init-bucket
 
 # 3. ローカルの .env の値を Secret Manager に一括登録（必要時のみ）
-python sync_secrets.py --push-env .env
+python scripts/sync_secrets.py --push-env .env
 ```
 
 ---
@@ -313,7 +321,7 @@ pip install -r requirements.txt
 
 ```bash
 # クラウド接続確認
-python sync_secrets.py --dry-run
+python scripts/sync_secrets.py --dry-run
 
 # ローカルサーバー起動
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
@@ -323,11 +331,11 @@ uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 
 ## 🚀 Google Cloud Run へのデプロイ
 
-[deploy.ps1](deploy.ps1) スクリプトを使用して、東京リージョン（`asia-northeast1`）に安全にデプロイできます：
+[scripts/deploy.ps1](scripts/deploy.ps1) スクリプトを使用して、東京リージョン（`asia-northeast1`）に安全にデプロイできます：
 
 ```powershell
 # Cloud Run へデプロイ
-.\deploy.ps1
+.\scripts\deploy.ps1
 ```
 
 ※Cloud Run 上ではサービスアカウントの IAM 権限によって Secret Manager や Cloud Storage に安全に接続するため、環境変数に生パスワードやシークレットを埋め込む必要はありません。

@@ -1,4 +1,4 @@
-# Python & virtual environment
+# Python & Virtual Environments
 __pycache__/
 *.py[cod]
 *$py.class
@@ -6,8 +6,11 @@ venv/
 .venv/
 env/
 ENV/
+dist/
+build/
+*.egg-info/
 
-# Secrets and environment files
+# Secrets & Environment Configurations
 .env
 .env.*
 !.env.example
@@ -19,7 +22,7 @@ credentials.json
 token.json
 service_account*.json
 
-# Testing & Caching
+# Local Tests & Test Artifacts
 tests/
 test/
 __tests__/
@@ -37,16 +40,26 @@ htmlcov/
 .mypy_cache/
 .ruff_cache/
 
-# Logs and temporary files
+# Logs & Temporary Files
 *.log
 tmp/
 temp/
 *.tmp
+.cache/
 
-# Operating system & Editor files
+# Operating System Files
 .DS_Store
+.AppleDouble
+.LSOverride
 Thumbs.db
 ehthumbs.db
 Desktop.ini
+$RECYCLE.BIN/
+*~
+.fuse_hidden*
+
+# Editor & IDE Settings
 .idea/
 .vscode/
+*.swp
+*.swo

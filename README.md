@@ -161,27 +161,36 @@ Curated workspace directory structure highlighting key files and components:
 ```
 KoreanTeacher_LINE/
 ├── app/
-│   ├── __init__.py           # Package marker
-│   ├── gemini_client.py      # Gemini model configuration, persona prompt, Firestore memory & tools
-│   ├── main.py               # FastAPI application, LINE webhook handlers, TTS pipeline & background jobs
-│   └── web_search.py         # Naver, Kakao, and Google Custom Search integration modules
+│   ├── __init__.py               # Package marker
+│   ├── config.py                 # Multi-PC configuration & Secret Manager resolution
+│   ├── gemini_client.py          # Gemini model configuration, persona prompt, Firestore memory & tools
+│   ├── main.py                   # FastAPI application, LINE webhook handlers, TTS pipeline & background jobs
+│   ├── memory.py                 # Dual-layer GCS state persistence & decoupled audit logging
+│   └── web_search.py             # Naver, Kakao, and Google Custom Search integration modules
 ├── docs/
 │   └── naver_kakao_api_guide.md  # Setup walkthrough for obtaining Naver and Kakao API keys
-├── .dockerignore             # Excludes unnecessary build artifacts from Docker image
-├── .gcloudignore             # Excludes files from Cloud Build packaging
-├── .gitignore                # Git hygiene configuration
-├── deploy.ps1                # Automated Cloud Run build and deployment PowerShell script
-├── Dockerfile                # Production container specification with Python 3.11-slim & ffmpeg
-├── README.md                 # Project documentation and architectural guide
-└── requirements.txt          # Python dependencies
+├── scripts/
+│   ├── deploy.ps1                # Automated Cloud Run build and deployment PowerShell script
+│   └── sync_secrets.py           # Multi-PC Secret Manager synchronization & GCS initialization
+├── .dockerignore                 # Excludes unnecessary build artifacts from Docker image
+├── .env.example                  # Environment variable schema and configuration reference
+├── .gcloudignore                 # Excludes files from Cloud Build packaging
+├── .gitignore                    # Git hygiene configuration
+├── Dockerfile                    # Production container specification with Python 3.11-slim & ffmpeg
+├── README.md                     # Project documentation and architectural guide
+├── README.ja.md                  # Japanese project documentation
+└── requirements.txt              # Python dependencies
 ```
 
 Key workspace files:
 - [app/main.py](app/main.py): Entry point containing FastAPI routes, LINE webhook handlers, and audio streaming endpoints.
+- [app/config.py](app/config.py): Dual-mode configuration manager resolving secrets via Secret Manager SDK, `gcloud` CLI fallback, or environment variables.
 - [app/gemini_client.py](app/gemini_client.py): Core AI logic configuring `gemini-3.8-flash`, Pydantic response models, system prompt, and Firestore persistence.
+- [app/memory.py](app/memory.py): Dual-layer Cloud Storage state persistence and stdout-streamed structured audit logging.
 - [app/web_search.py](app/web_search.py): Autonomous search tools for Naver Blog/Webkr, Kakao Web/Blog, and Google Custom Search.
 - [docs/naver_kakao_api_guide.md](docs/naver_kakao_api_guide.md): Guide for registering applications and obtaining Naver & Kakao API keys.
-- [deploy.ps1](deploy.ps1): Automated deployment script to Google Cloud Run.
+- [scripts/deploy.ps1](scripts/deploy.ps1): Automated deployment script to Google Cloud Run.
+- [scripts/sync_secrets.py](scripts/sync_secrets.py): Multi-PC secret synchronization and zero-setup dry-run diagnostics.
 - [Dockerfile](Dockerfile): Production container specification with non-root security and `ffmpeg` support.
 - [requirements.txt](requirements.txt): Application dependencies list.
 
@@ -274,19 +283,19 @@ No local `.env` or `token.json` file is required. When running on any PC or Clou
 
 ---
 
-## 🛠️ Multi-PC Setup & Sync Utility (`sync_secrets.py`)
+## 🛠️ Multi-PC Setup & Sync Utility (`scripts/sync_secrets.py`)
 
-The included `sync_secrets.py` tool simplifies cloud setup and verification across any machine:
+The included [scripts/sync_secrets.py](scripts/sync_secrets.py) tool simplifies cloud setup and verification across any machine:
 
 ```bash
 # 1. Run zero-setup dry-run verification (tests Secret Manager & GCS connectivity)
-python sync_secrets.py --dry-run
+python scripts/sync_secrets.py --dry-run
 
 # 2. Ensure the Cloud Storage bucket is created
-python sync_secrets.py --init-bucket
+python scripts/sync_secrets.py --init-bucket
 
 # 3. Push local .env secrets to Google Cloud Secret Manager in one shot (optional)
-python sync_secrets.py --push-env .env
+python scripts/sync_secrets.py --push-env .env
 ```
 
 ---
@@ -313,7 +322,7 @@ pip install -r requirements.txt
 
 ```bash
 # Verify cloud access
-python sync_secrets.py --dry-run
+python scripts/sync_secrets.py --dry-run
 
 # Start local server
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
@@ -323,11 +332,11 @@ uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 
 ## 🚀 Google Cloud Run Deployment
 
-The project includes an automated deployment script [deploy.ps1](deploy.ps1) for Google Cloud Run:
+The project includes an automated deployment script [scripts/deploy.ps1](scripts/deploy.ps1) for Google Cloud Run:
 
 ```powershell
 # Review and deploy to Cloud Run (Tokyo region: asia-northeast1)
-.\deploy.ps1
+.\scripts\deploy.ps1
 ```
 
 The script automatically ensures the GCS bucket exists and deploys the container to Cloud Run. Cloud Run securely accesses Secret Manager and Cloud Storage via IAM roles without embedding plaintext secrets in environment variables.
