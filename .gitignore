@@ -10,6 +10,7 @@ ENV/
 # Secrets and environment files
 .env
 .env.*
+!.env.example
 env.yaml
 *.pem
 *.key

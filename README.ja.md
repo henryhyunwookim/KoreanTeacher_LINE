@@ -210,127 +210,127 @@ KoreanTeacher_LINE/
 
 ---
 
-## 🔑 環境変数一覧
+## ☁️ マルチPC対応 クラウドネイティブ・アーキテクチャ
 
-`.env` ファイルをプロジェクト直下に作成して設定します。
+KoreanTeacher_LINE は、ローカルPC（Windows/macOS/Linux）やGoogle Cloud Runコンテナ環境を問わず、ゼロセットアップで即座に動作するポータブルアーキテクチャを採用しています：
 
-| 環境変数名 | 必須 | デフォルト値 / 設定例 | 説明 |
-|---|---|---|---|
-| `LINE_CHANNEL_SECRET` | **必須** | `your_channel_secret` | LINE Developersで発行されたチャネルシークレット（Webhookの署名検証用） |
-| `LINE_CHANNEL_ACCESS_TOKEN` | **必須** | `your_access_token` | LINE Developersで発行されたチャネルアクセストークン（長期） |
-| `GEMINI_API_KEY` | **必須** | `your_gemini_key` | Google AI Studioで取得したGemini APIキー |
-| `GOOGLE_CLOUD_PROJECT` | **必須** | `your_gcp_project_id` | FirestoreおよびGCPサービスの初期化に使用するGCPプロジェクトID |
-| `BASE_URL` | 任意 | `https://your-service-url.run.app` | LINEが音声ファイルをダウンロードするための公開HTTPSベースURL |
-| `GEMINI_MODEL` | 任意 | `gemini-3.8-flash` | 使用するGeminiモデル名 |
-| `PORT` | 任意 | `8080` | Uvicornサーバーのリッスンポート（Cloud Run環境では自動設定） |
-| `NAVER_CLIENT_ID` | 任意 | `your_naver_client_id` | Naver Search APIのクライアントID（韓国ローカル・ブログ検索用） |
-| `NAVER_CLIENT_SECRET` | 任意 | `your_naver_client_secret` | Naver Search APIのクライアントシークレット |
-| `KAKAO_REST_API_KEY` | 任意 | `your_kakao_rest_api_key` | Kakao Search REST APIキー（Daum検索用） |
-| `GOOGLE_SEARCH_API_KEY` | 任意 | `your_google_key` | Google Custom Search APIキー（一般的なWeb検索用） |
-| `GOOGLE_SEARCH_CX` | 任意 | `your_search_cx` | Google プログラマブル検索エンジンID |
+```
++-----------------------------------------------------------------------------------+
+| 複数台のローカルPC (Windows/Mac/Linux)          Cloud Run 本番コンテナ環境        |
+| (`gcloud auth login` 認証済み)                  (Compute Engine デフォルトSA)     |
++-----------------------------------------------------------------------------------+
+                                         |
+                                         v
+               +---------------------------------------------------+
+               | デュアルモード設定マネージャー (app/config.py)     |
+               | 1. Secret Manager Python SDK (ADC認証)            |
+               | 2. gcloud CLI フォールバック (`secrets versions`) |
+               | 3. OS一時ディレクトリ / 環境変数フォールバック    |
+               +---------------------------------------------------+
+                                         |
+            +----------------------------+----------------------------+
+            |                                                         |
+            v                                                         v
++-------------------------------+                         +-------------------------------+
+| Google Cloud Secret Manager   |                         | Google Cloud Storage (GCS)    |
+| - gemini-api-key              |                         | - 永続ステート / プロファイル |
+| - korean-teacher-line-channel |                         |   gs://<bucket>/korean_teacher|
+|   -secret / -access-token     |                         |   /user_cache.json            |
+| - naver / kakao / 検索キー    |                         | - 分離された実行・監査ログ    |
++-------------------------------+                         |   gs://<bucket>/korean_teacher|
+                                                          |   /run_log.json               |
+                                                          +-------------------------------+
+```
 
-> [!TIP]
-> NaverおよびKakaoのAPIキー取得手順の詳細は [docs/naver_kakao_api_guide.md](docs/naver_kakao_api_guide.md) をご覧ください。未設定の場合でも自動的にスキップされ、チャット機能自体は問題なく動作します。
+### 1. クラウドシークレット解決（ゼロセットアップ）
+ローカルに `.env` や認証トークンファイルを一切配置する必要がありません。
+1. アプリ起動時に **Google Cloud Secret Manager** から自動的にキーを解決します。
+2. ローカルのADC（Application Default Credentials）が未設定の場合でも、ログイン済みの `gcloud` CLI 経由でシームレスにフォールバック取得します。
+3. 取得した値はメモリ内に安全にキャッシュされるため、毎回のAPI呼び出しオーバーヘッドはありません。
+
+### 2. ステートとメモリのクラウド移行（Cloud Storage）
+- ユーザーの学習プロファイルや指示のキャッシュは **Google Cloud Storage** (`gs://<project_id>-korean-teacher-data/korean_teacher/`) を真実のソースとして永続化されます。
+- ローカル実行時のキャッシュはOSの一時ディレクトリ（`tempfile.gettempdir()`）に保存され、Gitリポジトリルートを**一切汚染しません**。
+
+### 3. 実行ログ・監査ログの完全分離
+- 会話ステートとシステムの運用ログ（実行時間、タイムスタンプ、エラー詳細）は完全に分離されています。
+- 運用ログは GCS（`run_log.json`）に蓄積されると同時に構造化JSONとして `stdout` に出力され、**Google Cloud Logging** に自動収集されます。
 
 ---
 
-## 💻 ローカル環境構築
+## 🔑 設定項目と Secret Manager キー名
+
+| 設定項目 | Secret Manager ID | 環境変数フォールバック | 説明 |
+|---|---|---|---|
+| Gemini API キー | `gemini-api-key` | `GEMINI_API_KEY` | モデル推論用 Gemini API キー |
+| LINE チャネルシークレット | `korean-teacher-line-channel-secret` | `LINE_CHANNEL_SECRET` | LINE Webhook 署名検証用チャネルシークレット |
+| LINE アクセストークン | `korean-teacher-line-channel-access-token` | `LINE_CHANNEL_ACCESS_TOKEN` | 返信送信用の長期チャネルアクセストークン |
+| GCP プロジェクト ID | — | `GOOGLE_CLOUD_PROJECT` | GCP プロジェクト ID（未指定時は `gcloud` から自動検出） |
+| GCS バケット名 | `korean-teacher-bucket-name` | `GCS_BUCKET_NAME` | Cloud Storage バケット名（デフォルト: `<project-id>-korean-teacher-data`） |
+| 公開ベース URL | — | `BASE_URL` | 音声ファイル配信用 Cloud Run 公開 URL |
+| Naver 検索（任意）| `naver-client-id`, `naver-client-secret` | `NAVER_CLIENT_ID`, `NAVER_CLIENT_SECRET` | 韓国ローカル情報・ブログ検索用キー |
+| Kakao 検索（任意）| `kakao-rest-api-key` | `KAKAO_REST_API_KEY` | Daum Web・ブログ検索用 REST API キー |
+| Google カスタム検索（任意）| `google-search-api-key`, `google-search-cx` | `GOOGLE_SEARCH_API_KEY`, `GOOGLE_SEARCH_CX` | Google Custom Search API キーおよびエンジン ID |
+
+---
+
+## 🛠️ マルチPC管理ツール (`sync_secrets.py`)
+
+同梱の `sync_secrets.py` スクリプトにより、どのマシンからでもクラウド連携のテストやシークレット登録が行えます：
+
+```bash
+# 1. ゼロセットアップ疎通確認（Secret Manager および GCS へのアクセスをドライラン検証）
+python sync_secrets.py --dry-run
+
+# 2. Cloud Storage バケットの自動作成・確認
+python sync_secrets.py --init-bucket
+
+# 3. ローカルの .env の値を Secret Manager に一括登録（必要時のみ）
+python sync_secrets.py --push-env .env
+```
+
+---
+
+## 💻 ローカル環境での実行
 
 ### 1. 前提条件
 
 - **Python 3.11以上**
-- **FFmpeg & FFprobe**（音声をAAC `.m4a` 形式に変換するために必須）
-  - Windows: `winget install Gyan.FFmpeg` または `choco install ffmpeg`
-  - macOS: `brew install ffmpeg`
-  - Linux (Ubuntu/Debian): `sudo apt-get install -y ffmpeg`
-- **Google Cloud SDK (`gcloud`)** のインストールと認証
+- **FFmpeg & FFprobe**
+- **Google Cloud SDK (`gcloud`)** ログイン済み:
   ```bash
-  gcloud auth application-default login
+  gcloud auth login
+  gcloud config set project <YOUR_PROJECT_ID>
   ```
-- **LINE Messaging API チャネル**（LINE Developers Consoleで作成）
 
-### 2. 仮想環境の作成と依存ライブラリ導入
+### 2. ライブラリ導入
 
 ```bash
-# リポジトリのクローン
-git clone https://github.com/your-username/KoreanTeacher_LINE.git
-cd KoreanTeacher_LINE
-
-# 仮想環境の作成
-python -m venv venv
-
-# 仮想環境の有効化 (Windows PowerShell)
-.\venv\Scripts\Activate.ps1
-# macOS / Linux の場合:
-# source venv/bin/activate
-
-# パッケージのインストール
 pip install -r requirements.txt
 ```
 
-### 3. ローカルサーバーの起動
+### 3. クラウド疎通確認と起動
 
 ```bash
+# クラウド接続確認
+python sync_secrets.py --dry-run
+
+# ローカルサーバー起動
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-起動後、ブラウザで `http://localhost:8000/health` にアクセスして動作を確認します。
-
-### 4. ローカルでのLINE Webhook疎通テスト
-
-LINE Webhookはインターネットからアクセス可能なHTTPS URLが必要です。
-
-1. **ngrok** または **localtunnel** でトンネルを開通します:
-   ```bash
-   ngrok http 8000
-   ```
-2. `.env` の `BASE_URL` に取得したURLを設定します（例: `BASE_URL=https://xxxx.ngrok-free.app`）。
-3. [LINE Developers Console](https://developers.line.biz/console/) にて:
-   - **Webhook URL** に `https://xxxx.ngrok-free.app/callback` を登録し、「検証」をクリック
-   - **Webhookの利用** を「オン」に設定
-   - **LINE公式アカウントの機能** の「応答メッセージ」を「オフ」に設定（自動応答の重複を防ぐため）
-
 ---
 
-## 🐳 Dockerでの実行
+## 🚀 Google Cloud Run へのデプロイ
 
-ローカルでDockerコンテナをビルド・起動できます:
-
-```bash
-# イメージのビルド
-docker build -t korean-teacher-bot .
-
-# コンテナの起動 (.env ファイルを渡す)
-docker run -d --name korean-teacher-bot -p 8080:8080 --env-file .env korean-teacher-bot
-```
-
----
-
-## 🚀 Google Cloud Runへのデプロイ
-
-付属の [deploy.ps1](deploy.ps1) スクリプトを使用して、ワンコマンドでGoogle Cloud Runにデプロイできます。
-
-### 1. 必要なGCP APIの有効化
-
-```bash
-gcloud services enable \
-    run.googleapis.com \
-    firestore.googleapis.com \
-    texttospeech.googleapis.com \
-    artifactregistry.googleapis.com
-```
-
-### 2. PowerShellスクリプトでデプロイ
-
-`.env` に記載された環境変数を自動で読み取り、東京リージョン（`asia-northeast1`）にデプロイします:
+[deploy.ps1](deploy.ps1) スクリプトを使用して、東京リージョン（`asia-northeast1`）に安全にデプロイできます：
 
 ```powershell
+# Cloud Run へデプロイ
 .\deploy.ps1
 ```
 
-### 3. LINE側のWebhook URL更新
-
-デプロイ完了時に表示されるCloud RunのURL（例: `https://korean-teacher-bot-xxx.asia-northeast1.run.app`）をコピーし、LINE Developers Consoleの **Webhook URL** に `https://korean-teacher-bot-xxx.asia-northeast1.run.app/callback` を設定してください。
+※Cloud Run 上ではサービスアカウントの IAM 権限によって Secret Manager や Cloud Storage に安全に接続するため、環境変数に生パスワードやシークレットを埋め込む必要はありません。
 
 ---
 

@@ -210,27 +210,84 @@ To ensure personalized, high-value learning over extended periods, the bot incor
 
 ---
 
-## 🔑 Environment Variables
+## ☁️ Multi-PC Cloud Native Architecture
 
-The application is configured using environment variables. Create a local `.env` file in the project root:
+KoreanTeacher_LINE is architected for zero-friction portability across multiple machines (Windows/macOS/Linux) and Google Cloud Run containers:
 
-| Variable | Required | Default / Example | Description |
+```
++-----------------------------------------------------------------------------------+
+| Multi-PC Local Machine (Windows/Mac/Linux)      Cloud Run Production Container    |
+| (Authenticated via `gcloud auth login` / ADC)   (Default Compute Service Account) |
++-----------------------------------------------------------------------------------+
+                                         |
+                                         v
+               +---------------------------------------------------+
+               | Dual-Mode Configuration Manager (app/config.py)   |
+               | 1. google-cloud-secret-manager Python SDK (ADC)   |
+               | 2. gcloud CLI fallback (`secrets versions access`)|
+               | 3. Local OS Temp / Environment Variable Fallback  |
+               +---------------------------------------------------+
+                                         |
+            +----------------------------+----------------------------+
+            |                                                         |
+            v                                                         v
++-------------------------------+                         +-------------------------------+
+| Google Cloud Secret Manager   |                         | Google Cloud Storage (GCS)    |
+| - gemini-api-key              |                         | - State/Profile Memory        |
+| - korean-teacher-line-channel |                         |   gs://<bucket>/korean_teacher|
+|   -secret / -access-token     |                         |   /user_cache.json            |
+| - naver / kakao / search keys |                         | - Decoupled Audit/Run Logs    |
++-------------------------------+                         |   gs://<bucket>/korean_teacher|
+                                                          |   /run_log.json               |
+                                                          +-------------------------------+
+```
+
+### 1. Cloud Secret Resolution (Zero Setup)
+No local `.env` or `token.json` file is required. When running on any PC or Cloud Run instance:
+1. The app automatically fetches secrets from **Google Cloud Secret Manager**.
+2. If local Application Default Credentials (ADC) are not configured, it transparently falls back to the authenticated `gcloud` CLI.
+3. Secrets are cached in-memory during execution for ultra-fast response times.
+
+### 2. State & Memory Migration (Cloud Storage)
+- User profile memory, instruction preferences, and fallback cache are stored directly in **Google Cloud Storage** (`gs://<project_id>-korean-teacher-data/korean_teacher/`).
+- Local offline execution defaults temporary fallback caches to the OS temporary directory (`tempfile.gettempdir()`), ensuring the Git repository root is **never polluted** with local state or cache files.
+
+### 3. Decoupled Operational & Execution Logs
+- Execution durations, timestamps, error traces, and audit logs are decoupled from conversational state.
+- Operational logs are stored in `gs://<project_id>-korean-teacher-data/korean_teacher/run_log.json` and streamed as structured JSON to `stdout` for ingestion by **Google Cloud Logging**.
+
+---
+
+## 🔑 Configuration & Secret Manager Keys
+
+| Key / Setting | Secret Manager ID | Environment Fallback | Description |
 |---|---|---|---|
-| `LINE_CHANNEL_SECRET` | **Yes** | `your_channel_secret` | LINE Messaging API Channel Secret for webhook signature verification. |
-| `LINE_CHANNEL_ACCESS_TOKEN` | **Yes** | `your_access_token` | LINE Messaging API Channel Access Token (long-lived) for sending replies. |
-| `GEMINI_API_KEY` | **Yes** | `your_gemini_key` | Google Gemini API Key for model inference. |
-| `GOOGLE_CLOUD_PROJECT` | **Yes** | `your_gcp_project_id` | GCP Project ID used to initialize Firestore and Cloud Run. |
-| `BASE_URL` | No | `https://korean-teacher-bot-...run.app` | Public HTTPS base URL used to construct publicly accessible audio links for LINE `AudioMessage`. |
-| `GEMINI_MODEL` | No | `gemini-3.8-flash` | Gemini model name used for conversations. |
-| `PORT` | No | `8080` | Port for the Uvicorn web server (automatically configured by Cloud Run). |
-| `NAVER_CLIENT_ID` | Optional | `your_naver_client_id` | Naver Search API Client ID for querying Naver Korean Blog & Web results. |
-| `NAVER_CLIENT_SECRET` | Optional | `your_naver_client_secret` | Naver Search API Client Secret. |
-| `KAKAO_REST_API_KEY` | Optional | `your_kakao_rest_api_key` | Kakao Search REST API Key for querying Daum Korean Web & Blog results. |
-| `GOOGLE_SEARCH_API_KEY` | Optional | `your_google_search_key` | Google Custom Search API Key for broader web search. |
-| `GOOGLE_SEARCH_CX` | Optional | `your_search_engine_cx` | Google Custom Search Engine ID (`cx`). |
+| Gemini API Key | `gemini-api-key` | `GEMINI_API_KEY` | Google Gemini API Key for model inference. |
+| LINE Channel Secret | `korean-teacher-line-channel-secret` | `LINE_CHANNEL_SECRET` | LINE Messaging API Channel Secret for webhook verification. |
+| LINE Access Token | `korean-teacher-line-channel-access-token` | `LINE_CHANNEL_ACCESS_TOKEN` | LINE Messaging API Channel Access Token for sending replies. |
+| GCP Project ID | — | `GOOGLE_CLOUD_PROJECT` | GCP Project ID (auto-detected via `gcloud` if unset). |
+| GCS Bucket Name | `korean-teacher-bucket-name` | `GCS_BUCKET_NAME` | Cloud Storage bucket (default: `<project-id>-korean-teacher-data`). |
+| Public Base URL | — | `BASE_URL` | Webhook URL / Cloud Run URL for audio serving. |
+| Naver Search (Optional)| `naver-client-id`, `naver-client-secret` | `NAVER_CLIENT_ID`, `NAVER_CLIENT_SECRET` | Naver Search credentials for local trend retrieval. |
+| Kakao Search (Optional)| `kakao-rest-api-key` | `KAKAO_REST_API_KEY` | Kakao Search credentials for web and blog search. |
+| Google Custom Search (Optional) | `google-search-api-key`, `google-search-cx` | `GOOGLE_SEARCH_API_KEY`, `GOOGLE_SEARCH_CX` | Google Custom Search API credentials. |
 
-> [!TIP]
-> For instructions on getting search API keys, consult the detailed guide in [docs/naver_kakao_api_guide.md](docs/naver_kakao_api_guide.md). If omitted, search operations fall back gracefully.
+---
+
+## 🛠️ Multi-PC Setup & Sync Utility (`sync_secrets.py`)
+
+The included `sync_secrets.py` tool simplifies cloud setup and verification across any machine:
+
+```bash
+# 1. Run zero-setup dry-run verification (tests Secret Manager & GCS connectivity)
+python sync_secrets.py --dry-run
+
+# 2. Ensure the Cloud Storage bucket is created
+python sync_secrets.py --init-bucket
+
+# 3. Push local .env secrets to Google Cloud Secret Manager in one shot (optional)
+python sync_secrets.py --push-env .env
+```
 
 ---
 
@@ -238,114 +295,42 @@ The application is configured using environment variables. Create a local `.env`
 
 ### 1. Prerequisites
 
-- **Python 3.11+** installed on your machine.
-- **FFmpeg & FFprobe** installed and available in your system `PATH` (required for audio conversion to AAC `.m4a` format).
-  - Windows: `winget install Gyan.FFmpeg` or `choco install ffmpeg`
-  - macOS: `brew install ffmpeg`
-  - Linux (Debian/Ubuntu): `sudo apt-get install -y ffmpeg`
+- **Python 3.11+**
+- **FFmpeg & FFprobe** installed in system `PATH`
 - **Google Cloud CLI (`gcloud`)** authenticated:
   ```bash
-  gcloud auth application-default login
+  gcloud auth login
+  gcloud config set project <YOUR_PROJECT_ID>
   ```
-- **LINE Developer Account** with a Messaging API channel.
 
-### 2. Virtual Environment & Dependencies
+### 2. Dependencies
 
 ```bash
-# Clone the repository and enter the directory
-git clone https://github.com/your-username/KoreanTeacher_LINE.git
-cd KoreanTeacher_LINE
-
-# Create virtual environment
-python -m venv venv
-
-# Activate virtual environment
-# Windows (PowerShell):
-.\venv\Scripts\Activate.ps1
-# macOS/Linux:
-source venv/bin/activate
-
-# Install dependencies
 pip install -r requirements.txt
 ```
 
-### 3. Running Locally
-
-Start the local development server with auto-reload:
+### 3. Verify Cloud Access & Run
 
 ```bash
+# Verify cloud access
+python sync_secrets.py --dry-run
+
+# Start local server
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
-```
-
-Verify that the server is running by opening `http://localhost:8000/health` in your browser.
-
-### 4. Testing LINE Webhooks Locally
-
-LINE requires a publicly reachable HTTPS webhook URL:
-
-1. Launch a tunnel with [ngrok](https://ngrok.com/) or [localtunnel](https://localtunnel.github.io/www/):
-   ```bash
-   ngrok http 8000
-   ```
-2. Set `BASE_URL` in your `.env` to your public ngrok domain (e.g. `BASE_URL=https://abc123.ngrok-free.app`).
-3. In the [LINE Developers Console](https://developers.line.biz/console/):
-   - Set **Webhook URL** to `https://abc123.ngrok-free.app/callback`.
-   - Click **Verify** to confirm connectivity.
-   - Enable **Use webhook**.
-   - Under **LINE Official Account features**, disable **Auto-reply messages** to avoid conflicting responses.
-
----
-
-## 🐳 Docker Deployment
-
-You can build and run the production container locally using Docker:
-
-```bash
-# Build the Docker image
-docker build -t korean-teacher-bot .
-
-# Run the container with your .env file
-docker run -d --name korean-teacher-bot -p 8080:8080 --env-file .env korean-teacher-bot
-```
-
-Test the container health:
-```bash
-curl http://localhost:8080/health
 ```
 
 ---
 
 ## 🚀 Google Cloud Run Deployment
 
-The project includes an automated deployment script [deploy.ps1](deploy.ps1) for Google Cloud Run.
-
-### 1. Enable Required GCP APIs
-
-Make sure your Google Cloud project has the necessary APIs enabled:
-
-```bash
-gcloud services enable \
-    run.googleapis.com \
-    firestore.googleapis.com \
-    texttospeech.googleapis.com \
-    artifactregistry.googleapis.com
-```
-
-### 2. Deploy with PowerShell
-
-The deployment script automatically reads secrets from your `.env` file and deploys the container to Cloud Run in `asia-northeast1` (Tokyo):
+The project includes an automated deployment script [deploy.ps1](deploy.ps1) for Google Cloud Run:
 
 ```powershell
+# Review and deploy to Cloud Run (Tokyo region: asia-northeast1)
 .\deploy.ps1
 ```
 
-### 3. Complete LINE Setup
-
-1. After deployment completes, copy the generated Cloud Run URL (e.g. `https://korean-teacher-bot-xyz.asia-northeast1.run.app`).
-2. Update `BASE_URL` to this URL (either in your `.env` before running [deploy.ps1](deploy.ps1) or directly in Cloud Run environment variables).
-3. In the [LINE Developers Console](https://developers.line.biz/console/):
-   - Set **Webhook URL** to `https://<YOUR-CLOUD-RUN-URL>/callback`.
-   - Verify the webhook and enable it.
+The script automatically ensures the GCS bucket exists and deploys the container to Cloud Run. Cloud Run securely accesses Secret Manager and Cloud Storage via IAM roles without embedding plaintext secrets in environment variables.
 
 ---
 

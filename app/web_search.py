@@ -1,10 +1,11 @@
 import os
 import httpx
+from app.config import get_setting
 
 def search_naver(query: str) -> str:
     """Query Naver Search API for blog and webkr results."""
-    client_id = os.environ.get("NAVER_CLIENT_ID")
-    client_secret = os.environ.get("NAVER_CLIENT_SECRET")
+    client_id = get_setting("NAVER_CLIENT_ID", ["naver-client-id"])
+    client_secret = get_setting("NAVER_CLIENT_SECRET", ["naver-client-secret"])
     if not client_id or not client_secret:
         return "Naver API keys not configured. (Please configure NAVER_CLIENT_ID and NAVER_CLIENT_SECRET)"
     
@@ -63,7 +64,7 @@ def search_naver(query: str) -> str:
 
 def search_kakao(query: str) -> str:
     """Query Kakao/Daum Search API for web and blog results."""
-    rest_api_key = os.environ.get("KAKAO_REST_API_KEY")
+    rest_api_key = get_setting("KAKAO_REST_API_KEY", ["kakao-rest-api-key"])
     if not rest_api_key:
         return "Kakao API key not configured. (Please configure KAKAO_REST_API_KEY)"
         
@@ -156,8 +157,8 @@ def search_naver_and_kakao(query: str) -> str:
 
 def search_google(query: str) -> str:
     """Query Google Custom Search JSON API. Falls back gracefully if not configured."""
-    api_key = os.environ.get("GOOGLE_SEARCH_API_KEY")
-    cx = os.environ.get("GOOGLE_SEARCH_CX")
+    api_key = get_setting("GOOGLE_SEARCH_API_KEY", ["google-search-api-key"])
+    cx = get_setting("GOOGLE_SEARCH_CX", ["google-search-cx"])
     if not api_key or not cx:
         return ""
     

@@ -43,23 +43,55 @@ class AssistantResponse(BaseModel):
         description="Current or newly assessed proficiency level of the student: 'beginner', 'intermediate', or 'advanced'. If assessed or updated in this turn, specify it; otherwise keep empty."
     )
 
-# In-memory fallback cache when Firestore is not connected (e.g. local testing)
-_local_user_cache = {}
+from app.config import get_gemini_api_key, get_gcp_project, get_setting
+from app.memory import load_cloud_state, save_cloud_state
 
-# GLOBAL VARIABLES: This prevents the 'Client has been closed' error by keeping the connection permanently held in memory.
-try:
-    gemini_client_global = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
-except Exception as e:
-    gemini_client_global = None
-    logger.warning(f"Failed to initialize genai.Client globally: {e}")
+logger = logging.getLogger(__name__)
 
-# Initialize connect to GCP Datastore/Firestore
+gemini_client_global = None
+db = None
+_db_initialized = False
+
+
+def get_gemini_client():
+    global gemini_client_global
+    if gemini_client_global is None:
+        api_key = get_gemini_api_key()
+        if api_key:
+            try:
+                gemini_client_global = genai.Client(api_key=api_key)
+            except Exception as e:
+                logger.error(f"Failed to initialize genai.Client: {e}")
+    return gemini_client_global
+
+
+def get_db():
+    global db, _db_initialized
+    if not _db_initialized:
+        _db_initialized = True
+        try:
+            gcp_proj = get_gcp_project()
+            db = firestore.Client(project=gcp_proj) if gcp_proj else firestore.Client()
+        except Exception as e:
+            db = None
+            logger.debug(f"Firestore not initialized or offline: {e}")
+    return db
+
+
+def _get_cloud_cache() -> dict[str, Any]:
+    return load_cloud_state("korean_teacher/user_cache.json", default={})
+
+
+def _save_cloud_cache(cache_data: dict[str, Any]) -> bool:
+    return save_cloud_state(cache_data, "korean_teacher/user_cache.json")
+
+
+# Try eager client initialization on module load
 try:
-    gcp_project = os.environ.get("GOOGLE_CLOUD_PROJECT")
-    db = firestore.Client(project=gcp_project) if gcp_project else firestore.Client()
+    gemini_client_global = get_gemini_client()
 except Exception as e:
-    db = None
-    logger.warning(f"Failed to initialize Firestore: {e}")
+    logger.warning(f"Eager gemini client init skipped: {e}")
+
 
 system_instruction = """
 <role>
@@ -197,10 +229,12 @@ def get_user_profile(user_id: str) -> dict[str, Any]:
         "proficiency_reason": "初期設定（デフォルト）",
         "permanent_instructions": []
     }
-    if not db:
-        return _local_user_cache.get(user_id, default_profile)
+    database = get_db()
+    if not database:
+        cloud_cache = _get_cloud_cache()
+        return cloud_cache.get(user_id, default_profile)
     try:
-        doc = db.collection("KoreanTeacherChats").document(user_id).get()
+        doc = database.collection("KoreanTeacherChats").document(user_id).get()
         if not doc.exists:
             return default_profile
         data = doc.to_dict() or {}
@@ -215,19 +249,22 @@ def get_user_profile(user_id: str) -> dict[str, Any]:
         return default_profile
 
 def update_user_proficiency_in_db(user_id: str, level: str, reason: str = ""):
-    """Persist user proficiency level to Firestore or local memory cache."""
+    """Persist user proficiency level to Firestore or GCS cloud state."""
     norm_level = normalize_proficiency_level(level)
     logger.info(f"Updating proficiency for {user_id} to {norm_level} (reason: {reason})")
     
-    if not db:
-        if user_id not in _local_user_cache:
-            _local_user_cache[user_id] = {}
-        _local_user_cache[user_id]["proficiency_level"] = norm_level
-        _local_user_cache[user_id]["proficiency_reason"] = reason
+    database = get_db()
+    if not database:
+        cloud_cache = _get_cloud_cache()
+        if user_id not in cloud_cache:
+            cloud_cache[user_id] = {}
+        cloud_cache[user_id]["proficiency_level"] = norm_level
+        cloud_cache[user_id]["proficiency_reason"] = reason
+        _save_cloud_cache(cloud_cache)
         return
         
     try:
-        doc_ref = db.collection("KoreanTeacherChats").document(user_id)
+        doc_ref = database.collection("KoreanTeacherChats").document(user_id)
         doc_ref.set({
             "proficiency": {
                 "level": norm_level,
@@ -242,11 +279,13 @@ def get_permanent_instructions(user_id: str) -> list[Any]:
     return profile.get("permanent_instructions", [])
 
 def get_raw_history(user_id: str) -> list[dict[str, Any]]:
-    """Get raw conversation history array from Firestore or local cache."""
-    if not db:
-        return _local_user_cache.get(user_id, {}).get("history", [])
+    """Get raw conversation history array from Firestore or GCS cloud state."""
+    database = get_db()
+    if not database:
+        cloud_cache = _get_cloud_cache()
+        return cloud_cache.get(user_id, {}).get("history", [])
     try:
-        doc = db.collection("KoreanTeacherChats").document(user_id).get()
+        doc = database.collection("KoreanTeacherChats").document(user_id).get()
         if not doc.exists:
             return []
         data = doc.to_dict() or {}
@@ -339,18 +378,21 @@ def save_turn_to_db(user_id: str, user_text: str, model_data: dict, model_raw_te
         "korean_phrase": model_data.get("korean_phrase", "")
     }
     
-    if not db:
-        if user_id not in _local_user_cache:
-            _local_user_cache[user_id] = {}
-        hist = _local_user_cache[user_id].get("history", [])
+    database = get_db()
+    if not database:
+        cloud_cache = _get_cloud_cache()
+        if user_id not in cloud_cache:
+            cloud_cache[user_id] = {}
+        hist = cloud_cache[user_id].get("history", [])
         hist.extend([user_turn, model_turn])
         if len(hist) > 40:
             hist = hist[-40:]
-        _local_user_cache[user_id]["history"] = hist
+        cloud_cache[user_id]["history"] = hist
+        _save_cloud_cache(cloud_cache)
         return
         
     try:
-        doc_ref = db.collection("KoreanTeacherChats").document(user_id)
+        doc_ref = database.collection("KoreanTeacherChats").document(user_id)
         doc = doc_ref.get()
         history = doc.to_dict().get("history", []) if doc.exists else []
         history.extend([user_turn, model_turn])
@@ -361,18 +403,21 @@ def save_turn_to_db(user_id: str, user_text: str, model_data: dict, model_raw_te
         logger.warning(f"Failed to save turn to DB for {user_id}: {e}")
 
 def delete_user_history(user_id: str):
-    if user_id in _local_user_cache:
-        del _local_user_cache[user_id]
-    if not db:
+    cloud_cache = _get_cloud_cache()
+    if user_id in cloud_cache:
+        del cloud_cache[user_id]
+        _save_cloud_cache(cloud_cache)
+    database = get_db()
+    if not database:
         return
     try:
-        db.collection("KoreanTeacherChats").document(user_id).delete()
+        database.collection("KoreanTeacherChats").document(user_id).delete()
     except Exception as e:
         logger.warning(f"Failed to delete history for {user_id}: {e}")
 
 def create_chat(user_id: str):
     history = get_history_from_db(user_id)
-    model_name = os.environ.get("GEMINI_MODEL", "gemini-3.8-flash")
+    model_name = get_setting("GEMINI_MODEL", default="gemini-3.8-flash")
     user_profile = get_user_profile(user_id)
     current_level = user_profile.get("proficiency_level", "beginner")
     current_reason = user_profile.get("proficiency_reason", "")
@@ -380,16 +425,19 @@ def create_chat(user_id: str):
     
     def save_user_instruction(instruction: str) -> str:
         """ユーザーから永続的に記憶してほしい要望や指示（例：「これからは敬語で話して」「好きなアイドルはBTS」など）があった場合に呼び出して保存します。"""
-        if not db:
-            if user_id not in _local_user_cache:
-                _local_user_cache[user_id] = {}
-            instructions = _local_user_cache[user_id].get("permanent_instructions", [])
+        database = get_db()
+        if not database:
+            cloud_cache = _get_cloud_cache()
+            if user_id not in cloud_cache:
+                cloud_cache[user_id] = {}
+            instructions = cloud_cache[user_id].get("permanent_instructions", [])
             if instruction not in instructions:
                 instructions.append(instruction)
-                _local_user_cache[user_id]["permanent_instructions"] = instructions
+                cloud_cache[user_id]["permanent_instructions"] = instructions
+                _save_cloud_cache(cloud_cache)
             return f"Successfully saved instruction: {instruction}"
             
-        doc_ref = db.collection("KoreanTeacherChats").document(user_id)
+        doc_ref = database.collection("KoreanTeacherChats").document(user_id)
         doc = doc_ref.get()
         current_instructions = doc.to_dict().get("permanent_instructions", []) if doc.exists else []
         
@@ -401,11 +449,14 @@ def create_chat(user_id: str):
 
     def clear_user_instructions() -> str:
         """ユーザーの永続的な記憶（好みや指示）をすべてリセット・消去します。"""
-        if not db:
-            if user_id in _local_user_cache:
-                _local_user_cache[user_id]["permanent_instructions"] = []
+        database = get_db()
+        if not database:
+            cloud_cache = _get_cloud_cache()
+            if user_id in cloud_cache:
+                cloud_cache[user_id]["permanent_instructions"] = []
+                _save_cloud_cache(cloud_cache)
             return "Successfully cleared all permanent instructions."
-        db.collection("KoreanTeacherChats").document(user_id).set({"permanent_instructions": firestore.DELETE_FIELD}, merge=True)
+        database.collection("KoreanTeacherChats").document(user_id).set({"permanent_instructions": firestore.DELETE_FIELD}, merge=True)
         return "Successfully cleared all permanent instructions."
 
     def update_user_proficiency(level: str, reason: str = "") -> str:
@@ -449,7 +500,11 @@ def create_chat(user_id: str):
         instructions_text = "\n".join([f"- {inst}" for inst in permanent_instructions])
         custom_system_instruction += f"\n\n<user_specific_instructions>\n{instructions_text}\n</user_specific_instructions>"
         
-    return gemini_client_global.chats.create(
+    client = get_gemini_client()
+    if not client:
+        raise RuntimeError("Gemini API Client is not configured. Please ensure GEMINI_API_KEY is available in Secret Manager or environment.")
+
+    return client.chats.create(
         model=model_name,
         config=types.GenerateContentConfig(
             system_instruction=custom_system_instruction,
@@ -509,8 +564,12 @@ def evaluate_korean_audio(user_id: str, audio_path: str, mime_type: str = "audio
         
     chat = create_chat(user_id)
     
+    client = get_gemini_client()
+    if not client:
+        raise RuntimeError("Gemini API Client is not configured. Please ensure GEMINI_API_KEY is available in Secret Manager or environment.")
+
     # Upload the file to Gemini API first (using config to obey the new SDK rules)
-    uploaded_file = gemini_client_global.files.upload(file=audio_path, config={'mime_type': mime_type})
+    uploaded_file = client.files.upload(file=audio_path, config={'mime_type': mime_type})
     
     response = chat.send_message([uploaded_file, prompt])
     

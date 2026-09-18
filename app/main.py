@@ -1,5 +1,6 @@
 import os
 import sys
+import time
 import tempfile
 import subprocess
 import threading
@@ -36,6 +37,13 @@ from dotenv import load_dotenv
 from google.cloud import texttospeech
 
 from app import gemini_client
+from app.config import (
+    get_line_channel_secret,
+    get_line_channel_access_token,
+    get_setting,
+    get_gcp_project,
+)
+from app.memory import append_run_log
 
 load_dotenv()
 
@@ -50,34 +58,58 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI()
 
-# Validate that the necessary environment variables are set
-LINE_CHANNEL_SECRET = os.environ.get("LINE_CHANNEL_SECRET")
-LINE_CHANNEL_ACCESS_TOKEN = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN")
-BASE_URL = os.environ.get("BASE_URL", "http://localhost:8080")
+_line_configuration = None
+_webhook_handler = None
 
-if not LINE_CHANNEL_SECRET or not LINE_CHANNEL_ACCESS_TOKEN:
-    logger.warning("LINE_CHANNEL_SECRET or LINE_CHANNEL_ACCESS_TOKEN is not set.")
 
-configuration = Configuration(access_token=LINE_CHANNEL_ACCESS_TOKEN)
-handler = WebhookHandler(LINE_CHANNEL_SECRET)
+def get_line_configuration() -> Configuration:
+    global _line_configuration
+    token = get_line_channel_access_token() or "dummy-token"
+    if _line_configuration is None or _line_configuration.access_token != token:
+        _line_configuration = Configuration(access_token=token)
+    return _line_configuration
+
+
+def get_webhook_handler() -> WebhookHandler:
+    global _webhook_handler
+    secret = get_line_channel_secret() or "dummy-secret"
+    if _webhook_handler is None:
+        _webhook_handler = WebhookHandler(secret)
+    elif _webhook_handler.webhook_secret != secret:
+        _webhook_handler.webhook_secret = secret
+    return _webhook_handler
+
+
+def get_base_url() -> str:
+    return get_setting("BASE_URL", default="http://localhost:8080") or "http://localhost:8080"
+
+
+handler = get_webhook_handler()
+
 
 @app.get("/health")
 def health_check():
     """Health check endpoint for diagnostics."""
     return {
         "status": "ok",
-        "model": os.environ.get("GEMINI_MODEL", "gemini-3.8-flash"),
-        "base_url": BASE_URL,
-        "has_naver": bool(os.environ.get("NAVER_CLIENT_ID")),
-        "has_kakao": bool(os.environ.get("KAKAO_REST_API_KEY")),
+        "model": get_setting("GEMINI_MODEL", default="gemini-3.8-flash"),
+        "base_url": get_base_url(),
+        "gcp_project": get_gcp_project(),
+        "has_line_secret": bool(get_line_channel_secret()),
+        "has_line_token": bool(get_line_channel_access_token()),
+        "has_gemini": bool(get_setting("GEMINI_API_KEY", ["gemini-api-key"])),
+        "has_naver": bool(get_setting("NAVER_CLIENT_ID", ["naver-client-id"])),
+        "has_kakao": bool(get_setting("KAKAO_REST_API_KEY", ["kakao-rest-api-key"])),
     }
+
 
 @app.get("/audio/{filename}")
 def get_audio(filename: str):
-    file_path = f"/tmp/{filename}"
+    file_path = os.path.join(tempfile.gettempdir(), filename)
     if os.path.exists(file_path):
         return FileResponse(file_path, media_type="audio/mp4")
     raise HTTPException(status_code=404, detail="File not found")
+
 
 @app.post("/callback")
 async def callback(request: Request):
@@ -85,6 +117,7 @@ async def callback(request: Request):
     body = await request.body()
     body_str = body.decode("utf-8")
     
+    handler = get_webhook_handler()
     try:
         handler.handle(body_str, signature)
     except InvalidSignatureError:
@@ -129,8 +162,9 @@ def generate_tts_audio(text: str, lang: str, output_id: str) -> tuple:
     Returns:
         Tuple of (audio_url, duration_ms).
     """
-    mp3_path = f"/tmp/{output_id}_{lang}.mp3"
-    m4a_path = f"/tmp/{output_id}_{lang}.m4a"
+    temp_dir = tempfile.gettempdir()
+    mp3_path = os.path.join(temp_dir, f"{output_id}_{lang}.mp3")
+    m4a_path = os.path.join(temp_dir, f"{output_id}_{lang}.m4a")
     
     tts_client = texttospeech.TextToSpeechClient()
     synthesis_input = texttospeech.SynthesisInput(text=text)
@@ -167,12 +201,12 @@ def generate_tts_audio(text: str, lang: str, output_id: str) -> tuple:
     )
     duration_ms = int(float(result.stdout.strip()) * 1000)
     
-    audio_url = f"{BASE_URL}/audio/{output_id}_{lang}.m4a"
+    audio_url = f"{get_base_url()}/audio/{output_id}_{lang}.m4a"
     return audio_url, duration_ms
 
 def show_loading(user_id: str):
     """Show loading animation for 1-to-1 chat to signal the bot is working."""
-    with ApiClient(configuration) as api_client:
+    with ApiClient(get_line_configuration()) as api_client:
         line_bot_api = MessagingApi(api_client)
         show_loading_request = ShowLoadingAnimationRequest(
             chatId=user_id,
@@ -182,7 +216,7 @@ def show_loading(user_id: str):
 
 def download_audio_content(message_id: str) -> str:
     """Download audio message from LINE servers and save to temp file."""
-    with ApiClient(configuration) as api_client:
+    with ApiClient(get_line_configuration()) as api_client:
         line_bot_blob_api = MessagingApiBlob(api_client)
         audio_content = line_bot_blob_api.get_message_content(message_id)
         
@@ -287,7 +321,7 @@ def format_assistant_response(feedback_data: dict, is_audio: bool) -> list:
 def send_line_response(reply_token: str, user_id: str, messages: list):
     """Send reply to user using reply token, fall back to push message on timeout."""
     try:
-        with ApiClient(configuration) as api_client:
+        with ApiClient(get_line_configuration()) as api_client:
             line_bot_api = MessagingApi(api_client)
             line_bot_api.reply_message(
                 ReplyMessageRequest(
@@ -299,7 +333,7 @@ def send_line_response(reply_token: str, user_id: str, messages: list):
     except Exception as re:
         logger.warning(f"Reply token failed, falling back to push message: {re}")
         try:
-            with ApiClient(configuration) as api_client:
+            with ApiClient(get_line_configuration()) as api_client:
                 line_bot_api = MessagingApi(api_client)
                 line_bot_api.push_message(
                     PushMessageRequest(
@@ -319,6 +353,7 @@ def send_error_message(reply_token: str, user_id: str, detail: str = ""):
 
 def process_text_in_background(user_id: str, reply_token: str, user_text: str, source_type: str):
     """Background thread to process text messages."""
+    start_time = time.time()
     try:
         logger.info(f"[TEXT] Processing message from {user_id}: {user_text[:50]}...")
         
@@ -343,12 +378,30 @@ def process_text_in_background(user_id: str, reply_token: str, user_text: str, s
         send_line_response(reply_token, user_id, messages)
         logger.info(f"[TEXT] Response sent to user {user_id}.")
         
+        duration_ms = int((time.time() - start_time) * 1000)
+        append_run_log({
+            "event": "process_text",
+            "user_id": user_id,
+            "duration_ms": duration_ms,
+            "status": "success",
+            "proficiency": feedback_data.get("user_proficiency", "")
+        })
+
     except Exception as e:
+        duration_ms = int((time.time() - start_time) * 1000)
         logger.error(f"[TEXT] Exception processing message for {user_id}: {e}\n{traceback.format_exc()}")
+        append_run_log({
+            "event": "process_text",
+            "user_id": user_id,
+            "duration_ms": duration_ms,
+            "status": "error",
+            "error": str(e)
+        })
         send_error_message(reply_token, user_id, str(e)[:100])
 
 def process_audio_in_background(user_id: str, reply_token: str, message_id: str, source_type: str):
     """Background thread to process audio messages."""
+    start_time = time.time()
     temp_file_path = ""
     try:
         logger.info(f"[AUDIO] Processing audio from {user_id}, message_id={message_id}...")
@@ -375,8 +428,25 @@ def process_audio_in_background(user_id: str, reply_token: str, message_id: str,
         send_line_response(reply_token, user_id, messages)
         logger.info(f"[AUDIO] Response sent to user {user_id}.")
         
+        duration_ms = int((time.time() - start_time) * 1000)
+        append_run_log({
+            "event": "process_audio",
+            "user_id": user_id,
+            "duration_ms": duration_ms,
+            "status": "success",
+            "proficiency": feedback_data.get("user_proficiency", "")
+        })
+
     except Exception as e:
+        duration_ms = int((time.time() - start_time) * 1000)
         logger.error(f"[AUDIO] Exception processing audio for {user_id}: {e}\n{traceback.format_exc()}")
+        append_run_log({
+            "event": "process_audio",
+            "user_id": user_id,
+            "duration_ms": duration_ms,
+            "status": "error",
+            "error": str(e)
+        })
         send_error_message(reply_token, user_id, str(e)[:100])
     finally:
         if temp_file_path and os.path.exists(temp_file_path):

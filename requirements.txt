@@ -7,3 +7,5 @@ httpx
 google-cloud-texttospeech
 pydantic
 google-cloud-firestore
+google-cloud-secret-manager
+google-cloud-storage
