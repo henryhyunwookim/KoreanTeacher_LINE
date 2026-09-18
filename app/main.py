@@ -60,6 +60,7 @@ app = FastAPI()
 
 _line_configuration = None
 _webhook_handler = None
+_webhook_secret = None
 
 
 def get_line_configuration() -> Configuration:
@@ -71,12 +72,11 @@ def get_line_configuration() -> Configuration:
 
 
 def get_webhook_handler() -> WebhookHandler:
-    global _webhook_handler
+    global _webhook_handler, _webhook_secret
     secret = get_line_channel_secret() or "dummy-secret"
-    if _webhook_handler is None:
+    if _webhook_handler is None or _webhook_secret != secret:
         _webhook_handler = WebhookHandler(secret)
-    elif _webhook_handler.webhook_secret != secret:
-        _webhook_handler.webhook_secret = secret
+        _webhook_secret = secret
     return _webhook_handler
 
 
