@@ -111,6 +111,91 @@ def get_audio(filename: str):
     raise HTTPException(status_code=404, detail="File not found")
 
 
+@app.post("/cron/check-in")
+@app.get("/cron/check-in")
+async def trigger_inactivity_checkin(request: Request):
+    """Proactive check-in endpoint for inactive users.
+    Can be invoked by Google Cloud Scheduler, GitHub Actions, or local CLI scripts.
+    Secured by CRON_SECRET header or query parameter when CRON_SECRET is configured.
+    """
+    cron_secret = get_setting("CRON_SECRET", default="")
+    if cron_secret:
+        auth_header = request.headers.get("X-Cron-Secret", "")
+        query_secret = request.query_params.get("secret", "")
+        if auth_header != cron_secret and query_secret != cron_secret:
+            raise HTTPException(status_code=401, detail="Unauthorized cron trigger")
+
+    try:
+        min_days = int(request.query_params.get("min_days", "3"))
+        max_days = int(request.query_params.get("max_days", "14"))
+        cooldown_days = int(request.query_params.get("cooldown_days", "7"))
+        dry_run = request.query_params.get("dry_run", "false").lower() in ["true", "1", "yes"]
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid numeric query parameters")
+
+    logger.info(f"[CRON] Running check-in (min_days={min_days}, max_days={max_days}, cooldown={cooldown_days}, dry_run={dry_run})")
+    eligible_users = gemini_client.find_inactive_users(
+        min_days=min_days,
+        max_days=max_days,
+        cooldown_days=cooldown_days
+    )
+
+    dispatched = []
+    errors = []
+
+    for user_info in eligible_users:
+        uid = user_info["user_id"]
+        try:
+            checkin_data = gemini_client.generate_checkin_message(uid)
+            chat_reply = checkin_data.get("chat_reply", "").strip()
+            raw_qrs = checkin_data.get("quick_replies", [])
+
+            qr_items = []
+            if isinstance(raw_qrs, list):
+                for qr in raw_qrs:
+                    qr_str = str(qr).strip()[:20]
+                    if qr_str:
+                        qr_items.append(QuickReplyItem(action=MessageAction(label=qr_str, text=qr_str)))
+            quick_reply = QuickReply(items=qr_items) if qr_items else None
+
+            if not dry_run and chat_reply:
+                with ApiClient(get_line_configuration()) as api_client:
+                    line_bot_api = MessagingApi(api_client)
+                    line_bot_api.push_message(
+                        PushMessageRequest(
+                            to=uid,
+                            messages=[TextMessage(text=chat_reply, quick_reply=quick_reply)]
+                        )
+                    )
+                gemini_client.record_user_checkin(uid)
+                append_run_log({
+                    "event": "proactive_checkin",
+                    "user_id": uid,
+                    "inactive_days": user_info.get("inactive_days"),
+                    "status": "sent"
+                })
+
+            dispatched.append({
+                "user_id": uid,
+                "inactive_days": user_info.get("inactive_days"),
+                "chat_reply": chat_reply,
+                "quick_replies": [item.action.label for item in qr_items] if qr_items else [],
+                "status": "dry_run" if dry_run else "sent"
+            })
+        except Exception as e:
+            logger.error(f"[CRON] Failed check-in for {uid}: {e}", exc_info=True)
+            errors.append({"user_id": uid, "error": str(e)})
+
+    return {
+        "status": "ok",
+        "eligible_count": len(eligible_users),
+        "dispatched_count": len(dispatched),
+        "dry_run": dry_run,
+        "dispatched": dispatched,
+        "errors": errors
+    }
+
+
 @app.post("/callback")
 async def callback(request: Request):
     signature = request.headers.get("X-Line-Signature", "")
