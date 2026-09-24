@@ -342,7 +342,7 @@ The project includes an automated deployment script [scripts/deploy.ps1](scripts
 .\scripts\deploy.ps1
 ```
 
-The script automatically ensures the GCS bucket exists and deploys the container to Cloud Run. Cloud Run securely accesses Secret Manager and Cloud Storage via IAM roles without embedding plaintext secrets in environment variables.
+The script automatically ensures the regional GCS bucket (`gs://<project-id>-korean-teacher-data` in `asia-northeast1`) exists and deploys the container to Cloud Run. Cloud Run securely accesses Secret Manager, Firestore, and Cloud Storage via IAM roles without embedding plaintext secrets in environment variables.
 
 ---
 
