@@ -21,6 +21,7 @@ DESIGN RATIONALE:
 from __future__ import annotations
 
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, List, Optional
 import httpx
 
@@ -229,9 +230,14 @@ def search_naver_and_kakao(query: str) -> str:
     Returns:
         Consolidated multi-engine search results.
     """
-    naver_res = search_naver(query)
-    kakao_res = search_kakao(query)
-    google_res = search_google(query)
+    # Provider requests are independent; keep the pool small and preserve output order.
+    with ThreadPoolExecutor(max_workers=3, thread_name_prefix="search") as executor:
+        naver_future = executor.submit(search_naver, query)
+        kakao_future = executor.submit(search_kakao, query)
+        google_future = executor.submit(search_google, query)
+        naver_res = naver_future.result()
+        kakao_res = kakao_future.result()
+        google_res = google_future.result()
 
     output: List[str] = []
 

@@ -352,10 +352,6 @@ uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 
 スクリプトはデフォルトのGCSバケットがなければ作成し、LINEからWebhookへ到達できるようCloud Runを公開HTTPでデプロイします。`-BucketName` で独自名を指定する場合、そのバケットは事前に作成してください（初期化処理が作成するのはデフォルト名のバケットのみです）。Cloud Runの実行サービスアカウントにSecret Manager、Firestore、Cloud Storage、Text-to-Speechへの必要な権限を付与してください。デプロイ後は `BASE_URL` にサービスURLを設定し、`/cron/check-in` をスケジュール実行する場合は `CRON_SECRET` も設定してください。
 
-### デプロイ状況の確認（2026-09-25）
-
-稼働中サービスのヘルスチェックは正常で、`asia-northeast1` のリビジョン `korean-teacher-bot-00021-g4w` にトラフィックの100%が割り当てられていました。成功したCloud Buildのソースアーカイブには、現在の `app/gemini_client.py`、`app/main.py`、`app/web_search.py` のローカル変更が含まれており、未コミットのアプリ変更はすでにデプロイ済みです。その後に作成されたコミット `a0c0ba2` はREADMEのみの変更で、このコンテナイメージには含まれていません。Cloud BuildにはGitコミットSHAが記録されないため、デプロイの識別にはCloud Runのリビジョンとイメージダイジェストを使用してください。
-
 ---
 
 ## 🤝 コントリビューション

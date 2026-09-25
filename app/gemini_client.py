@@ -1,6 +1,7 @@
 import os
 import json
 import logging
+import time
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 from typing import Any, Optional, List, Dict
@@ -236,8 +237,12 @@ def normalize_proficiency_level(level: str) -> str:
         return "intermediate"
     return "beginner"
 
-def get_user_profile(user_id: str) -> dict[str, Any]:
-    """Retrieve user profile containing proficiency level and permanent instructions."""
+def get_user_context(
+    user_id: str,
+    message_type: str = "state"
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Load conversation history and profile together from the user's state record."""
+    started_at = time.perf_counter()
     default_profile: dict[str, Any] = {
         "proficiency_level": "beginner",
         "proficiency_reason": "初期設定（デフォルト）",
@@ -246,21 +251,47 @@ def get_user_profile(user_id: str) -> dict[str, Any]:
     database = get_db()
     if not database:
         cloud_cache = _get_cloud_cache()
-        return cloud_cache.get(user_id, default_profile)
+        user_state = cloud_cache.get(user_id, default_profile)
+        logger.info(
+            "[LATENCY] type=%s stage=state_read duration_ms=%d",
+            message_type,
+            int((time.perf_counter() - started_at) * 1000)
+        )
+        return user_state.get("history", []), user_state
     try:
         doc = database.collection("KoreanTeacherChats").document(user_id).get()
         if not doc.exists:
-            return default_profile
+            logger.info(
+                "[LATENCY] type=%s stage=state_read duration_ms=%d",
+                message_type,
+                int((time.perf_counter() - started_at) * 1000)
+            )
+            return [], default_profile
         data = doc.to_dict() or {}
         prof = data.get("proficiency", {})
-        return {
+        profile = {
             "proficiency_level": prof.get("level", "beginner"),
             "proficiency_reason": prof.get("reason", "記録済み"),
             "permanent_instructions": data.get("permanent_instructions", [])
         }
+        logger.info(
+            "[LATENCY] type=%s stage=state_read duration_ms=%d",
+            message_type,
+            int((time.perf_counter() - started_at) * 1000)
+        )
+        return data.get("history", []), profile
     except Exception as e:
-        logger.warning(f"Failed to fetch profile from DB for {user_id}: {e}")
-        return default_profile
+        logger.warning("Failed to fetch user context from DB for %s: %s", user_id, e)
+        logger.info(
+            "[LATENCY] type=%s stage=state_read outcome=error duration_ms=%d",
+            message_type,
+            int((time.perf_counter() - started_at) * 1000)
+        )
+        return [], default_profile
+
+def get_user_profile(user_id: str) -> dict[str, Any]:
+    """Retrieve user profile containing proficiency level and permanent instructions."""
+    return get_user_context(user_id)[1]
 
 def update_user_proficiency_in_db(user_id: str, level: str, reason: str = ""):
     """Persist user proficiency level to Firestore or GCS cloud state."""
@@ -343,19 +374,7 @@ def get_temporal_guidance(elapsed_seconds: Optional[float], day_diff: Optional[i
 
 def get_raw_history(user_id: str) -> list[dict[str, Any]]:
     """Get raw conversation history array from Firestore or GCS cloud state."""
-    database = get_db()
-    if not database:
-        cloud_cache = _get_cloud_cache()
-        return cloud_cache.get(user_id, {}).get("history", [])
-    try:
-        doc = database.collection("KoreanTeacherChats").document(user_id).get()
-        if not doc.exists:
-            return []
-        data = doc.to_dict() or {}
-        return data.get("history", [])
-    except Exception as e:
-        logger.warning(f"Failed to fetch raw history from DB for {user_id}: {e}")
-        return []
+    return get_user_context(user_id)[0]
 
 def analyze_repetition_context(
     raw_history: list[dict[str, Any]],
@@ -462,8 +481,12 @@ def analyze_repetition_context(
             
     return ""
 
-def get_history_from_db(user_id: str) -> list:
-    raw_history = get_raw_history(user_id)
+def get_history_from_db(
+    user_id: str,
+    raw_history: Optional[list[dict[str, Any]]] = None
+) -> list:
+    if raw_history is None:
+        raw_history = get_raw_history(user_id)
     converted = []
     # Inject recent 12 turns (6 user-model pairs) to balance context and token usage
     window = raw_history[-12:]
@@ -701,14 +724,17 @@ def create_chat(
     user_id: str,
     current_dt: Optional[datetime] = None,
     elapsed_seconds: Optional[float] = None,
-    day_diff: Optional[int] = None
+    day_diff: Optional[int] = None,
+    raw_history: Optional[list[dict[str, Any]]] = None,
+    user_profile: Optional[dict[str, Any]] = None
 ):
     if current_dt is None:
         current_dt = get_current_jst_time()
 
-    history = get_history_from_db(user_id)
+    history = get_history_from_db(user_id, raw_history)
     model_name = get_setting("GEMINI_MODEL", default="gemini-3.8-flash")
-    user_profile = get_user_profile(user_id)
+    if user_profile is None:
+        user_profile = get_user_profile(user_id)
     current_level = user_profile.get("proficiency_level", "beginner")
     current_reason = user_profile.get("proficiency_reason", "")
     permanent_instructions = user_profile.get("permanent_instructions", [])
@@ -820,7 +846,7 @@ def create_chat(
     )
 
 def evaluate_korean_text(user_id: str, user_text: str) -> dict:
-    raw_history = get_raw_history(user_id)
+    raw_history, user_profile = get_user_context(user_id, "text")
     current_dt = get_current_jst_time()
     
     # Calculate elapsed time and calendar day difference from last turn in history
@@ -841,14 +867,28 @@ def evaluate_korean_text(user_id: str, user_text: str) -> dict:
         user_id,
         current_dt=current_dt,
         elapsed_seconds=elapsed_seconds,
-        day_diff=day_diff
+        day_diff=day_diff,
+        raw_history=raw_history,
+        user_profile=user_profile
     )
     
     prompt = f"生徒のメッセージ：「{user_text}」"
     if repetition_prompt:
         prompt += f"\n\n{repetition_prompt}"
         
-    response = chat.send_message(prompt)
+    generation_started = time.perf_counter()
+    try:
+        response = chat.send_message(prompt)
+    except Exception:
+        logger.info(
+            "[LATENCY] type=text stage=gemini_request outcome=error duration_ms=%d",
+            int((time.perf_counter() - generation_started) * 1000)
+        )
+        raise
+    logger.info(
+        "[LATENCY] type=text stage=gemini_request duration_ms=%d",
+        int((time.perf_counter() - generation_started) * 1000)
+    )
     
     data = json.loads(response.text)
     
@@ -861,7 +901,7 @@ def evaluate_korean_text(user_id: str, user_text: str) -> dict:
     return data
 
 def evaluate_korean_audio(user_id: str, audio_path: str, mime_type: str = "audio/mp4") -> dict:
-    raw_history = get_raw_history(user_id)
+    raw_history, user_profile = get_user_context(user_id, "audio")
     current_dt = get_current_jst_time()
     
     # Calculate elapsed time and calendar day difference from last turn in history
@@ -901,7 +941,9 @@ def evaluate_korean_audio(user_id: str, audio_path: str, mime_type: str = "audio
         user_id,
         current_dt=current_dt,
         elapsed_seconds=elapsed_seconds,
-        day_diff=day_diff
+        day_diff=day_diff,
+        raw_history=raw_history,
+        user_profile=user_profile
     )
     
     client = get_gemini_client()
@@ -909,9 +951,33 @@ def evaluate_korean_audio(user_id: str, audio_path: str, mime_type: str = "audio
         raise RuntimeError("Gemini API Client is not configured. Please ensure GEMINI_API_KEY is available in Secret Manager or environment.")
 
     # Upload the file to Gemini API first (using config to obey the new SDK rules)
-    uploaded_file = client.files.upload(file=audio_path, config={'mime_type': mime_type})
-    
-    response = chat.send_message([uploaded_file, prompt])
+    upload_started = time.perf_counter()
+    try:
+        uploaded_file = client.files.upload(file=audio_path, config={'mime_type': mime_type})
+    except Exception:
+        logger.info(
+            "[LATENCY] type=audio stage=gemini_upload outcome=error duration_ms=%d",
+            int((time.perf_counter() - upload_started) * 1000)
+        )
+        raise
+    logger.info(
+        "[LATENCY] type=audio stage=gemini_upload duration_ms=%d",
+        int((time.perf_counter() - upload_started) * 1000)
+    )
+
+    generation_started = time.perf_counter()
+    try:
+        response = chat.send_message([uploaded_file, prompt])
+    except Exception:
+        logger.info(
+            "[LATENCY] type=audio stage=gemini_request outcome=error duration_ms=%d",
+            int((time.perf_counter() - generation_started) * 1000)
+        )
+        raise
+    logger.info(
+        "[LATENCY] type=audio stage=gemini_request duration_ms=%d",
+        int((time.perf_counter() - generation_started) * 1000)
+    )
     
     data = json.loads(response.text)
     

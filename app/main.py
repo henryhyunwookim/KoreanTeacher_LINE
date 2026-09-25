@@ -394,12 +394,19 @@ def format_assistant_response(feedback_data: dict, is_audio: bool) -> list:
     )
     
     if should_send_audio and audio_script:
+        tts_started = time.perf_counter()
         try:
             audio_id = str(uuid.uuid4())
             audio_url, audio_duration = generate_tts_audio(audio_script, audio_lang, audio_id)
             messages.append(AudioMessage(original_content_url=audio_url, duration=audio_duration))
         except Exception as ae:
             logger.error(f"Failed to generate TTS audio: {ae}", exc_info=True)
+        finally:
+            logger.info(
+                "[LATENCY] type=%s stage=tts duration_ms=%d",
+                "audio" if is_audio else "text",
+                int((time.perf_counter() - tts_started) * 1000)
+            )
             
     return messages
 
@@ -438,9 +445,9 @@ def send_error_message(reply_token: str, user_id: str, detail: str = ""):
 
 def process_text_in_background(user_id: str, reply_token: str, user_text: str, source_type: str):
     """Background thread to process text messages."""
-    start_time = time.time()
+    start_time = time.perf_counter()
     try:
-        logger.info(f"[TEXT] Processing message from {user_id}: {user_text[:50]}...")
+        logger.info("[TEXT] Processing incoming text message.")
         
         # Show loading animation for 1:1 chats
         if source_type == "user":
@@ -451,19 +458,35 @@ def process_text_in_background(user_id: str, reply_token: str, user_text: str, s
                 
         # Invoke Gemini Client
         logger.info(f"[TEXT] Calling Gemini for user {user_id}...")
+        stage_started = time.perf_counter()
         feedback_data = gemini_client.evaluate_korean_text(user_id, user_text)
+        logger.info(
+            "[LATENCY] type=text stage=evaluation duration_ms=%d",
+            int((time.perf_counter() - stage_started) * 1000)
+        )
         feedback_data["user_text"] = user_text
         logger.info(f"[TEXT] Gemini response received for user {user_id}.")
         
         # Format response messages
+        stage_started = time.perf_counter()
         messages = format_assistant_response(feedback_data, False)
-        logger.info(f"Formatted messages to send: {messages}")
+        logger.info(
+            "[LATENCY] type=text stage=format duration_ms=%d",
+            int((time.perf_counter() - stage_started) * 1000)
+        )
+        logger.info("Formatted %d message(s) for LINE.", len(messages))
         
         # Send reply
+        stage_started = time.perf_counter()
         send_line_response(reply_token, user_id, messages)
+        logger.info(
+            "[LATENCY] type=text stage=line_send duration_ms=%d",
+            int((time.perf_counter() - stage_started) * 1000)
+        )
         logger.info(f"[TEXT] Response sent to user {user_id}.")
         
-        duration_ms = int((time.time() - start_time) * 1000)
+        duration_ms = int((time.perf_counter() - start_time) * 1000)
+        logger.info("[LATENCY] type=text stage=total outcome=success duration_ms=%d", duration_ms)
         append_run_log({
             "event": "process_text",
             "user_id": user_id,
@@ -473,7 +496,8 @@ def process_text_in_background(user_id: str, reply_token: str, user_text: str, s
         })
 
     except Exception as e:
-        duration_ms = int((time.time() - start_time) * 1000)
+        duration_ms = int((time.perf_counter() - start_time) * 1000)
+        logger.info("[LATENCY] type=text stage=total outcome=error duration_ms=%d", duration_ms)
         logger.error(f"[TEXT] Exception processing message for {user_id}: {e}\n{traceback.format_exc()}")
         append_run_log({
             "event": "process_text",
@@ -486,7 +510,7 @@ def process_text_in_background(user_id: str, reply_token: str, user_text: str, s
 
 def process_audio_in_background(user_id: str, reply_token: str, message_id: str, source_type: str):
     """Background thread to process audio messages."""
-    start_time = time.time()
+    start_time = time.perf_counter()
     temp_file_path = ""
     try:
         logger.info(f"[AUDIO] Processing audio from {user_id}, message_id={message_id}...")
@@ -498,22 +522,43 @@ def process_audio_in_background(user_id: str, reply_token: str, message_id: str,
                 logger.warning(f"Failed to show loading: {le}")
                 
         # Download audio from LINE blob API
+        stage_started = time.perf_counter()
         temp_file_path = download_audio_content(message_id)
+        logger.info(
+            "[LATENCY] type=audio stage=download duration_ms=%d",
+            int((time.perf_counter() - stage_started) * 1000)
+        )
         logger.info(f"[AUDIO] Audio downloaded: {temp_file_path}")
         
         # Evaluate audio
         logger.info(f"[AUDIO] Calling Gemini for user {user_id}...")
+        stage_started = time.perf_counter()
         feedback_data = gemini_client.evaluate_korean_audio(user_id, temp_file_path, "audio/mp4")
+        logger.info(
+            "[LATENCY] type=audio stage=evaluation duration_ms=%d",
+            int((time.perf_counter() - stage_started) * 1000)
+        )
         logger.info(f"[AUDIO] Gemini response received for user {user_id}.")
         
         # Format response messages (is_audio=True)
+        stage_started = time.perf_counter()
         messages = format_assistant_response(feedback_data, True)
+        logger.info(
+            "[LATENCY] type=audio stage=format duration_ms=%d",
+            int((time.perf_counter() - stage_started) * 1000)
+        )
         
         # Send reply
+        stage_started = time.perf_counter()
         send_line_response(reply_token, user_id, messages)
+        logger.info(
+            "[LATENCY] type=audio stage=line_send duration_ms=%d",
+            int((time.perf_counter() - stage_started) * 1000)
+        )
         logger.info(f"[AUDIO] Response sent to user {user_id}.")
         
-        duration_ms = int((time.time() - start_time) * 1000)
+        duration_ms = int((time.perf_counter() - start_time) * 1000)
+        logger.info("[LATENCY] type=audio stage=total outcome=success duration_ms=%d", duration_ms)
         append_run_log({
             "event": "process_audio",
             "user_id": user_id,
@@ -523,7 +568,8 @@ def process_audio_in_background(user_id: str, reply_token: str, message_id: str,
         })
 
     except Exception as e:
-        duration_ms = int((time.time() - start_time) * 1000)
+        duration_ms = int((time.perf_counter() - start_time) * 1000)
+        logger.info("[LATENCY] type=audio stage=total outcome=error duration_ms=%d", duration_ms)
         logger.error(f"[AUDIO] Exception processing audio for {user_id}: {e}\n{traceback.format_exc()}")
         append_run_log({
             "event": "process_audio",

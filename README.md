@@ -353,10 +353,6 @@ The [scripts/deploy.ps1](scripts/deploy.ps1) script builds from the repository r
 
 The script creates the default GCS bucket if needed, then deploys the service with public HTTP access so LINE can reach the webhook. A custom `-BucketName` must already exist; the script's bucket initialization creates only the default bucket. Grant the Cloud Run runtime service account the required access to Secret Manager, Firestore, Cloud Storage, and Text-to-Speech. Set `BASE_URL` to the deployed service URL and configure `CRON_SECRET` before scheduling `/cron/check-in`.
 
-### Deployment Verification (2026-09-25)
-
-The live service was healthy and serving 100% of traffic from revision `korean-teacher-bot-00021-g4w` in `asia-northeast1`. Its successful Cloud Build source archive contains the current local changes in `app/gemini_client.py`, `app/main.py`, and `app/web_search.py`; therefore, those uncommitted application changes are already deployed. The later commit `a0c0ba2` changes only the README files and was created after that image build, so it is not part of the container. Cloud Build did not record a Git commit SHA; use the Cloud Run revision and image digest as the deployment identity.
-
 ---
 
 ## 🤝 Contribution
