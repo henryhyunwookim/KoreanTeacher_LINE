@@ -1,6 +1,6 @@
 # 🇰🇷🇯🇵 KoreanTeacher_LINE
 
-An AI-powered interactive Korean learning partner and friendly guide built natively for LINE! Mentored by **Teacher Kim Hyun-woo (김현우)**, this bot helps Japanese learners speak and understand Korean effortlessly and with fun—just like chatting with a warm, encouraging native Korean friend and teacher.
+An AI-powered interactive Korean learning partner and friendly guide built natively for LINE! Mentored by **Teacher Kim Hyun-woo (김현우)**, this bot helps Japanese speakers learning Korean speak and understand the language effortlessly and with fun—just like chatting with a warm, encouraging native Korean friend and teacher.
 
 > 📖 [日本語版 README (Japanese version)](./README.ja.md)
 
