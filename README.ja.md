@@ -34,9 +34,9 @@ LINEで学べるAI韓国語学習パートナー＆ガイドボット！
 - **🔍 リアルタイム韓国トレンド・旅行情報検索**
   - Naver検索（ブログ・Web）、Kakao/Daum検索、Google検索と連携。最新のカフェ、グルメ、観光地、流行表現などをリアルタイムに検索して回答します。
 - **🧠 時間認識型 短期コンテキスト＆長期記憶アーキテクチャ**
-  - **時間認識型 短期コンテキスト**: 直近12ターン（6往復）のスライディングウィンドウにISO-8601タイムスタンプ（JST/KST - UTC+9）を付与。ターン間の経過時間を算出し、Geminiにリアルタイムな時間感覚（朝昼晩の時間帯、同日中の再開、数日ぶりの再開など）を提供します。日を跨いだ挨拶で誤った繰り返し判定を起こさず、数日前の表現を覚えていた生徒を適切に称賛します。
-  - **長期記憶**: 生徒の習熟度レベル（初級/中級/上級）に加え、呼び名や学習目的、好きなアイドル、会話の好み（「敬語で」「パンマルで」など）をFirestoreに永続保存。セッションを跨いで常に指導指針へ反映。
-  - **自律的リエンゲージメント（休眠復帰チェックイン）**: 3日〜14日間やり取りが途絶えた生徒を自動検知し、キム・ヒョンウから温かくプレッシャーのない近況伺いLINEプッシュメッセージを自動送信（`/cron/check-in` と Google Cloud Scheduler 連携、7日間のクールダウン制御付き）。
+  - **時間認識型 短期コンテキスト**: ユーザーごとに最大40ターンを保存し、そのうち直近12ターン（6往復）をISO-8601タイムスタンプ（JST/KST - UTC+9）付きでGeminiに送信。ターン間の経過時間を会話の時間的背景として使い、同日中や数日ぶりの再開を自然に扱います。
+  - **長期記憶**: 生徒の習熟度レベル（初級/中級/上級）、会話履歴、呼び名や学習目的、好きなアイドルなどの好みをFirestoreに保存します。Firestoreを初期化できない場合はGCSのJSONキャッシュを使用し、GCSも利用できない場合はOS一時ディレクトリにフォールバックします。
+  - **休眠復帰チェックイン**: デフォルトで最終利用から3〜14日経過したユーザーを抽出し、LINEプッシュ用のメッセージを生成します。`/cron/check-in` または `scripts/trigger_check_in.py` から実行でき、デフォルトのクールダウンは7日です。エンドポイントは `CRON_SECRET` を設定した場合のみ認証されます。
 - **☁️ サーバーレス＆クラウドネイティブ**
   - Google Cloud Run上でコンテナとして稼働。アイドル時はインスタンス数がゼロにスケールダウンするため、低コストで運用可能です。
 
@@ -129,7 +129,8 @@ flowchart TD
     subgraph Processing ["メッセージ処理パイプライン"]
         Worker -->|"5a. ローディングアニメーション表示"| LineAPI
         Worker -->|"5b. 音声データ取得 (音声メッセージ時)"| LineAPI
-        Worker -->|"6. 会話履歴・ユーザー設定取得"| Firestore[("Google Cloud Firestore")]
+        Worker -->|"6. 会話履歴・ユーザー設定取得"| Firestore[("Firestore（ユーザーデータの主保存先）")]
+        Worker -. "Firestoreを利用できない場合" .-> GCSState[("GCS JSONステート・フォールバック")]
 
         Worker -->|"7. プロンプト + 履歴 + ツール実行"| Gemini["Gemini 3.8 Flash (google-genai)"]
 
@@ -141,6 +142,7 @@ flowchart TD
 
         Gemini -->|"8. 構造化JSON返却 (AssistantResponse)"| Worker
         Worker -->|"9. 会話履歴の保存"| Firestore
+        Worker -. "Firestoreを利用できない場合" .-> GCSState
 
         subgraph AudioSynthesis ["音声合成パイプライン"]
             Worker -->|"10. 音声合成 (リクエスト時または音声入力時)"| CloudTTS["Google Cloud Text-to-Speech"]
@@ -171,7 +173,8 @@ KoreanTeacher_LINE/
 │   └── naver_kakao_api_guide.md  # Naver & Kakao APIキー取得手順書
 ├── scripts/
 │   ├── deploy.ps1                # Cloud Run自動デプロイ用PowerShellスクリプト
-│   └── sync_secrets.py           # マルチPCシークレット同期・GCS初期化スクリプト
+│   ├── sync_secrets.py           # マルチPCシークレット同期・GCS初期化スクリプト
+│   └── trigger_check_in.py       # 休眠チェックインのプレビュー・送信CLI
 ├── .dockerignore                 # Dockerイメージビルド時の除外設定
 ├── .env.example                  # 環境変数テンプレート・設定リファレンス
 ├── .gcloudignore                 # Cloud Buildパッケージング時の除外設定
@@ -186,11 +189,12 @@ KoreanTeacher_LINE/
 - [app/main.py](app/main.py): FastAPIのエンドポイント定義、LINE Webhook受信処理、音声ストリーミング
 - [app/config.py](app/config.py): Secret Manager SDK、`gcloud` CLI、環境変数を透過的にフォールバック解決するデュアルモード設定管理
 - [app/gemini_client.py](app/gemini_client.py): `gemini-3.8-flash` の設定、Pydanticレスポンスモデル、プロンプト、Firestore永続化
-- [app/memory.py](app/memory.py): Google Cloud Storage を用いた2層ステート永続化とCloud Logging向け構造化ログ出力
+- [app/memory.py](app/memory.py): GCS JSONステート保存とCloud Logging向け構造化ログ出力。ローカルキャッシュはOS一時ディレクトリに保存
 - [app/web_search.py](app/web_search.py): Naverブログ/Web、Kakaoブログ/Web、Googleカスタム検索の実行モジュール
 - [docs/naver_kakao_api_guide.md](docs/naver_kakao_api_guide.md): NaverおよびKakaoの開発者登録とAPIキー取得方法の解説
 - [scripts/deploy.ps1](scripts/deploy.ps1): Google Cloud Runへ自動デプロイするスクリプト
 - [scripts/sync_secrets.py](scripts/sync_secrets.py): マルチPCシークレット同期およびゼロセットアップ診断ツール
+- [scripts/trigger_check_in.py](scripts/trigger_check_in.py): 休眠ユーザー向けチェックインのプレビューおよびLINEプッシュ送信
 - [Dockerfile](Dockerfile): 非rootユーザー実行・ffmpeg導入済みの本番用コンテナ定義
 - [requirements.txt](requirements.txt): 必要パッケージ一覧
 
@@ -203,7 +207,7 @@ KoreanTeacher_LINE/
 | `/callback` | `POST` | LINE Messaging APIのWebhookエンドポイント。署名検証（`X-Line-Signature`）を行い、テキスト・音声・友だち追加/ブロック解除イベント等を処理します。 |
 | `/health` | `GET` | 稼働確認・診断用エンドポイント。モデル名、Base URL、外部検索APIの設定有無を返します。 |
 | `/audio/{filename}` | `GET` | 合成された `.m4a` 音声ファイルをLINEの `AudioMessage` 再生用に配信します。 |
-| `/cron/check-in` | `POST` / `GET` | 休眠ユーザー（3〜14日未対話）に対する自律チェックインエンドポイント（`CRON_SECRET` 保護）。LINE Push APIで温かいメッセージを配信します。 |
+| `/cron/check-in` | `POST` / `GET` | 休眠ユーザーを検索し、チェックインを生成します。`dry_run=true` 以外ではLINE Push APIで送信します。`CRON_SECRET` 設定時のみ `X-Cron-Secret` ヘッダーまたは `secret` クエリで認証されます。`min_days`、`max_days`、`cooldown_days`、`dry_run` を指定できます。 |
 
 ---
 
@@ -213,59 +217,40 @@ KoreanTeacher_LINE/
 
 | コンポーネント | 範囲・保存先 | 仕組み・動作 |
 |---|---|---|
-| **時間認識型 短期コンテキスト** | 会話ターン（Firestore / メモリキャッシュ） | 直近**12ターン（6往復分）**をJSTタイムスタンプ付きでGeminiへ動的に供給。直前ターンからの経過時間（分単位・時間単位・日数単位）を算出してGeminiへ指示：<br>• **2時間以内**: リアルタイムな会話ラリー。<br>• **同日中（数時間空き）**: 時間帯（午後・夜）に合わせた再開挨拶。<br>• **数日ぶり**: 自然な再会挨拶（「久しぶり！」「今日もお疲れ様！」）。数日前の挨拶に対するオウム返し誤検知を防止し、過去に教えたフレーズのアウトプットを「覚えててくれたこと」として称賛。 |
-| **長期記憶** | 永続プロファイル（Firestore） | 生徒の**習熟度レベル**（`beginner`, `intermediate`, `advanced`）と、明示的な**カスタム指示・好み**（呼び名、学習目標、好きなK-POPグループ、話し方の希望など）をFirestoreに永続保存します。日を跨いだセッションでもシステムプロンプトに常時注入されます。 |
-| **自律チェックイン（休眠復帰）** | 定期実行クローン（Cloud Scheduler / CLI） | **3日〜14日間**やり取りがない生徒を自動抽出。キム・ヒョンウが生徒のレベルに合わせたプレッシャーのない日常メッセージと2〜3個のクイック返信ボタンをLINEプッシュ送信します（**7日間のクールダウン**付き、通知不要の要望も尊重）。 |
+| **時間認識型 短期コンテキスト** | Firestore（主保存先）、利用できない場合はGCS JSONキャッシュ | ISO-8601タイムスタンプ付きで最大40ターンを保存し、直近**12ターン（6往復分）**をGeminiへ送信。経過時間に応じて会話中、同日中の再開、数日ぶりの再開を自然に扱います。 |
+| **長期記憶** | Firestore（主保存先）、利用できない場合はGCS JSONキャッシュ | 生徒の**習熟度レベル**（`beginner`, `intermediate`, `advanced`）と、明示的な**カスタム指示・好み**（呼び名、学習目標、好きなK-POPグループ、話し方の希望など）を保存し、毎回のシステム指示へ反映します。 |
+| **自律チェックイン（休眠復帰）** | `/cron/check-in` エンドポイントまたは `scripts/trigger_check_in.py` | デフォルトで**3〜14日間**利用がないユーザーを抽出します。送信時はデフォルトで**7日間のクールダウン**を適用し、配信停止の希望も尊重します。エンドポイントは `CRON_SECRET` 未設定時には認証されません。 |
 
-*※プライバシー配慮：ユーザーがボットをブロックまたは友達解除（Unfollow）した際、保存された履歴やプロファイルは自動的にFirestoreから完全削除されます。*
+*※プライバシー配慮：ユーザーがボットをブロックまたは友達解除（Unfollow）した際、FirestoreとGCSフォールバックキャッシュから該当ユーザーの履歴・プロファイルを削除します。*
 
 ---
 
 ## ☁️ マルチPC対応 クラウドネイティブ・アーキテクチャ
 
-KoreanTeacher_LINE は、ローカルPC（Windows/macOS/Linux）やGoogle Cloud Runコンテナ環境を問わず、ゼロセットアップで即座に動作するポータブルアーキテクチャを採用しています：
+ローカル開発とCloud Runは同じ設定・永続化コードを使用します。環境変数がSecret Managerより優先され、Secret ManagerはADCを使用して読み込みます。ADCで取得できない場合は `gcloud` CLIでシークレットを読み込みます。ユーザーの会話・プロファイル情報はFirestoreを主保存先とし、GCSはJSONフォールバックキャッシュと運用ログに使用します。
 
-```
-+-----------------------------------------------------------------------------------+
-| 複数台のローカルPC (Windows/Mac/Linux)          Cloud Run 本番コンテナ環境        |
-| (`gcloud auth login` 認証済み)                  (Compute Engine デフォルトSA)     |
-+-----------------------------------------------------------------------------------+
-                                         |
-                                         v
-               +---------------------------------------------------+
-               | デュアルモード設定マネージャー (app/config.py)     |
-               | 1. Secret Manager Python SDK (ADC認証)            |
-               | 2. gcloud CLI フォールバック (`secrets versions`) |
-               | 3. OS一時ディレクトリ / 環境変数フォールバック    |
-               +---------------------------------------------------+
-                                         |
-            +----------------------------+----------------------------+
-            |                                                         |
-            v                                                         v
-+-------------------------------+                         +-------------------------------+
-| Google Cloud Secret Manager   |                         | Google Cloud Storage (GCS)    |
-| - gemini-api-key              |                         | - 永続ステート / プロファイル |
-| - korean-teacher-line-channel |                         |   gs://<bucket>/korean_teacher|
-|   -secret / -access-token     |                         |   /user_cache.json            |
-| - naver / kakao / 検索キー    |                         | - 分離された実行・監査ログ    |
-+-------------------------------+                         |   gs://<bucket>/korean_teacher|
-                                                          |   /run_log.json               |
-                                                          +-------------------------------+
+```mermaid
+flowchart LR
+  Runtime["ローカルプロセスまたはCloud Run"] --> Config["app/config.py"]
+  Config -->|"環境変数 / .env"| Settings["解決済み設定"]
+  Config -->|"ADC、次にgcloud CLIでシークレット取得"| Secrets[("Secret Manager")]
+  Runtime -->|"ユーザーデータの主保存先"| Firestore[("Firestore")]
+  Runtime -. "Firestoreを利用できない場合" .-> GCSCache[("GCS user_cache.json")]
+  Runtime -->|"フォールバックキャッシュ・実行ログ"| GCS[("Cloud Storage")]
+  Runtime -. "Cloud Storageを利用できない場合" .-> Temp["OS一時ディレクトリ"]
 ```
 
-### 1. クラウドシークレット解決（ゼロセットアップ）
-ローカルに `.env` や認証トークンファイルを一切配置する必要がありません。
-1. アプリ起動時に **Google Cloud Secret Manager** から自動的にキーを解決します。
-2. ローカルのADC（Application Default Credentials）が未設定の場合でも、ログイン済みの `gcloud` CLI 経由でシームレスにフォールバック取得します。
-3. 取得した値はメモリ内に安全にキャッシュされるため、毎回のAPI呼び出しオーバーヘッドはありません。
+### 1. クラウドシークレットの解決
+ローカルの `.env` にある値が優先されます。環境変数に値がない場合、アプリはADCを使って**Google Cloud Secret Manager**から取得し、取得できなければログイン済みの `gcloud` CLIを試します。解決した値はプロセス内にキャッシュされます。
 
-### 2. ステートとメモリのクラウド移行（Cloud Storage）
-- ユーザーの学習プロファイルや指示のキャッシュは **Google Cloud Storage** (`gs://<project_id>-korean-teacher-data/korean_teacher/`) を真実のソースとして永続化されます。
-- ローカル実行時のキャッシュはOSの一時ディレクトリ（`tempfile.gettempdir()`）に保存され、Gitリポジトリルートを**一切汚染しません**。
+### 2. ユーザーデータとフォールバック保存先
+- Firestoreクライアントを初期化できる場合、会話履歴とユーザープロファイルは**Firestore**に保存されます。
+- Firestoreを利用できない場合、`gs://<bucket>/korean_teacher/user_cache.json` を読み書きします。GCS Python SDKでアクセスできない場合は、認証済みの `gcloud storage` CLIを利用できます。
+- Cloud Storageも利用できない場合は、OS一時ディレクトリ（`tempfile.gettempdir()`）にキャッシュします。このローカルフォールバックは、別のマシンやCloud Runインスタンスを越えて保持される永続ストレージではありません。
 
 ### 3. 実行ログ・監査ログの完全分離
 - 会話ステートとシステムの運用ログ（実行時間、タイムスタンプ、エラー詳細）は完全に分離されています。
-- 運用ログは GCS（`run_log.json`）に蓄積されると同時に構造化JSONとして `stdout` に出力され、**Google Cloud Logging** に自動収集されます。
+- 運用ログは `gs://<bucket>/korean_teacher/run_log.json` に蓄積されると同時に構造化JSONとして `stdout` に出力され、**Google Cloud Logging** に自動収集されます。
 
 ---
 
@@ -276,9 +261,12 @@ KoreanTeacher_LINE は、ローカルPC（Windows/macOS/Linux）やGoogle Cloud 
 | Gemini API キー | `gemini-api-key` | `GEMINI_API_KEY` | モデル推論用 Gemini API キー |
 | LINE チャネルシークレット | `korean-teacher-line-channel-secret` | `LINE_CHANNEL_SECRET` | LINE Webhook 署名検証用チャネルシークレット |
 | LINE アクセストークン | `korean-teacher-line-channel-access-token` | `LINE_CHANNEL_ACCESS_TOKEN` | 返信送信用の長期チャネルアクセストークン |
-| GCP プロジェクト ID | — | `GOOGLE_CLOUD_PROJECT` | GCP プロジェクト ID（未指定時は `gcloud` から自動検出） |
-| GCS バケット名 | `korean-teacher-bucket-name` | `GCS_BUCKET_NAME` | Cloud Storage バケット名（デフォルト: `<project-id>-korean-teacher-data`） |
-| 公開ベース URL | — | `BASE_URL` | 音声ファイル配信用 Cloud Run 公開 URL |
+| GCP プロジェクト ID | — | `GOOGLE_CLOUD_PROJECT` または `GCP_PROJECT` | GCP プロジェクト ID（未指定時は `gcloud` から自動検出） |
+| GCS バケット名 | `korean-teacher-bucket-name` | `GCS_BUCKET_NAME` | Cloud Storage バケット名（デフォルト: `<project-id>-korean-teacher-data`。プロジェクトIDを解決できない場合は `korean-teacher`） |
+| Gemini モデル | — | `GEMINI_MODEL` | モデル名（デフォルト: `gemini-3.8-flash`） |
+| 公開ベース URL | — | `BASE_URL` | TTS音声URLの生成に使う公開URL（デフォルト: `http://localhost:8080`）。ローカル開発時はローカルサーバーのURLを設定します。 |
+| コンテナポート | Cloud Run `PORT` | `PORT` | Docker起動時に待ち受けるポート（デフォルト: `8080`）。ローカル実行例では `8000` を使用します。 |
+| Cronシークレット（任意） | `cron-secret`（標準候補） | `CRON_SECRET` | 設定すると `/cron/check-in` の認証を有効化します。`X-Cron-Secret` ヘッダーまたは `secret` クエリで指定します。未設定時は認証されません。 |
 | Naver 検索（任意）| `naver-client-id`, `naver-client-secret` | `NAVER_CLIENT_ID`, `NAVER_CLIENT_SECRET` | 韓国ローカル情報・ブログ検索用キー |
 | Kakao 検索（任意）| `kakao-rest-api-key` | `KAKAO_REST_API_KEY` | Daum Web・ブログ検索用 REST API キー |
 | Google カスタム検索（任意）| `google-search-api-key`, `google-search-cx` | `GOOGLE_SEARCH_API_KEY`, `GOOGLE_SEARCH_CX` | Google Custom Search API キーおよびエンジン ID |
@@ -300,6 +288,18 @@ python scripts/sync_secrets.py --init-bucket
 python scripts/sync_secrets.py --push-env .env
 ```
 
+`--project <project-id>` で `gcloud` のアクティブプロジェクトを上書きできます。複数の処理を同時に指定することもできます（例: `python scripts/sync_secrets.py --project <project-id> --init-bucket --dry-run`）。`--push-env` がSecret Managerへ登録するのは認識対象のAPI資格情報だけで、`BASE_URL` や `GCS_BUCKET_NAME` などの設定値は対象外です。
+
+### 休眠チェックインCLI
+
+[scripts/trigger_check_in.py](scripts/trigger_check_in.py) で対象ユーザーと生成メッセージを確認できます。デフォルトはドライランで、実際にLINEプッシュを送信するには `--send` を指定します。
+
+```bash
+python scripts/trigger_check_in.py --dry-run
+python scripts/trigger_check_in.py --send --min-days 3 --max-days 14 --cooldown-days 7
+python scripts/trigger_check_in.py --user-id U12345678 --dry-run
+```
+
 ---
 
 ## 💻 ローカル環境での実行
@@ -307,18 +307,22 @@ python scripts/sync_secrets.py --push-env .env
 ### 1. 前提条件
 
 - **Python 3.11以上**
-- **FFmpeg & FFprobe**
-- **Google Cloud SDK (`gcloud`)** ログイン済み:
-  ```bash
-  gcloud auth login
-  gcloud config set project <YOUR_PROJECT_ID>
-  ```
+- **FFmpeg と FFprobe**（システムの `PATH` に必要。Dockerイメージには `ffmpeg` パッケージとしてインストール済み）
+- 使用する機能に応じたGoogle Cloudサービスへのアクセス権。SDKでADCを使う場合は `gcloud auth application-default login`、シークレットやストレージのCLIフォールバックには `gcloud auth login` が必要です。
+
+ヘルパースクリプト用のアクティブプロジェクトを設定します:
+
+```bash
+gcloud config set project <YOUR_PROJECT_ID>
+```
 
 ### 2. ライブラリ導入
 
 ```bash
-pip install -r requirements.txt
+python -m pip install -r requirements.txt
 ```
+
+ローカル開発では [.env.example](.env.example) をもとに `.env` を作成するか、シェルに環境変数を設定します。アプリは `.env` を自動で読み込みます。Gemini APIキーとLINEチャネル認証情報を設定してください。クラウド永続化にはFirestore、TTSにはText-to-Speechへのアクセスが必要です。ローカルサーバーのポートに合わせて `BASE_URL=http://localhost:8000` を設定してください。
 
 ### 3. クラウド疎通確認と起動
 
@@ -330,18 +334,23 @@ python scripts/sync_secrets.py --dry-run
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
+`http://localhost:8000/health` で設定状況を確認できます。LINE Webhookには、外部から到達できる `<BASE_URL>/callback` を登録してください。ローカルでWebhookを試すには、HTTPSでアクセス可能なトンネル経由でローカルサーバーを公開する必要があります。
+
 ---
 
 ## 🚀 Google Cloud Run へのデプロイ
 
-[scripts/deploy.ps1](scripts/deploy.ps1) スクリプトを使用して、東京リージョン（`asia-northeast1`）に安全にデプロイできます：
+[scripts/deploy.ps1](scripts/deploy.ps1) はリポジトリルートからビルドし、Cloud Runへデプロイします。デフォルトはサービス名 `korean-teacher-bot`、リージョン `asia-northeast1`、バケット名 `<project-id>-korean-teacher-data` です。
 
 ```powershell
 # Cloud Run へデプロイ
 .\scripts\deploy.ps1
+
+# デプロイ先を指定
+.\scripts\deploy.ps1 -ProjectId "my-gcp-project" -AppName "korean-teacher-bot" -Region "asia-northeast1"
 ```
 
-※Cloud Run 上ではサービスアカウントの IAM 権限によって Secret Manager や Cloud Storage に安全に接続するため、環境変数に生パスワードやシークレットを埋め込む必要はありません。
+スクリプトはデフォルトのGCSバケットがなければ作成し、LINEからWebhookへ到達できるようCloud Runを公開HTTPでデプロイします。`-BucketName` で独自名を指定する場合、そのバケットは事前に作成してください（初期化処理が作成するのはデフォルト名のバケットのみです）。Cloud Runの実行サービスアカウントにSecret Manager、Firestore、Cloud Storage、Text-to-Speechへの必要な権限を付与してください。デプロイ後は `BASE_URL` にサービスURLを設定し、`/cron/check-in` をスケジュール実行する場合は `CRON_SECRET` も設定してください。
 
 ---
 
