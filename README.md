@@ -117,42 +117,117 @@ graph LR
 
 ## 🏗️ Architecture & Data Flow
 
+To eliminate LINE webhook timeouts and ensure rapid, dependable user feedback, the application completely decouples the instant HTTP webhook acknowledgment (`HTTP 200 OK`) from the heavier AI inference, search tool calling, speech synthesis, and persistence layers.
+
+### 1. End-to-End Processing Pipeline
+
 ```mermaid
 flowchart TD
-    User(["LINE User (Mobile App)"]) -->|"1. Text or Audio Message"| LineAPI["LINE Messaging API Gateway"]
-    LineAPI -->|"2. POST /callback (X-Line-Signature)"| FastAPI["FastAPI Server (Cloud Run)"]
-    
-    FastAPI -->|"3. HTTP 200 OK (Immediate Handshake)"| LineAPI
-    FastAPI -->|"4. Dispatch Background Thread"| Worker["Background Worker Thread"]
+    classDef phase fill:#f8fafc,stroke:#cbd5e1,stroke-width:1px,stroke-dasharray: 4 4;
+    classDef entry fill:#e0f2fe,stroke:#0284c7,stroke-width:2px;
+    classDef compute fill:#f3e8ff,stroke:#9333ea,stroke-width:2px;
+    classDef ai fill:#fef3c7,stroke:#d97706,stroke-width:2px;
+    classDef storage fill:#ecfdf5,stroke:#059669,stroke-width:2px;
+    classDef line fill:#dcfce7,stroke:#16a34a,stroke-width:2px;
 
-    subgraph Processing ["Background Processing Pipeline"]
-        Worker -->|"5a. Trigger Loading Animation"| LineAPI
-        Worker -->|"5b. Download Audio Content (if voice message)"| LineAPI
-        Worker -->|"6. Load Recent Turns & Saved Preferences"| Firestore[("Firestore (primary user store)")]
-        Worker -. "Firestore unavailable" .-> GCSState[("GCS JSON State Fallback")]
+    subgraph Phase1 ["1️⃣ Ingestion & Fast Handshake"]
+        direction TB
+        UserIn(["👤 LINE User (Mobile)"]):::entry
+        LineIn["🟢 LINE Webhook Gateway"]:::line
+        FastAPI["⚡ FastAPI Server (Cloud Run)"]:::compute
+        Worker["🔄 Async Background Worker"]:::compute
 
-        Worker -->|"7. Prompt with History + Schema + Tools"| Gemini["Gemini 3.8 Flash (google-genai)"]
-
-        subgraph ToolExecution ["Autonomous Tool Calling"]
-            Gemini <-->|"Tool: search_naver_and_kakao"| SearchAPIs["Naver / Kakao / Google Search"]
-            Gemini <-->|"Tool: save_user_instruction"| Firestore
-            Gemini <-->|"Tool: clear_user_instructions"| Firestore
-        end
-
-        Gemini -->|"8. Structured JSON (AssistantResponse)"| Worker
-        Worker -->|"9. Save Turn & Update History"| Firestore
-        Worker -. "Firestore unavailable" .-> GCSState
-
-        subgraph AudioSynthesis ["Speech Synthesis Pipeline"]
-            Worker -->|"10. Synthesize Speech (if requested or voice)"| CloudTTS["Google Cloud Text-to-Speech"]
-            CloudTTS -->|"MP3 Stream"| FFmpeg["ffmpeg (Transcode to AAC / m4a)"]
-            FFmpeg -->|"Save /tmp audio"| AudioStorage["Temp Storage (/audio/{filename})"]
-        end
-
-        Worker -->|"11. Build Messages (Text, Cards, QuickReplies, Audio)"| LineAPI
+        UserIn -->|"1. Send Text or Audio"| LineIn
+        LineIn -->|"2. POST /callback"| FastAPI
+        FastAPI -->|"3. HTTP 200 OK (Instant Handshake)"| LineIn
+        FastAPI -->|"4. Dispatch Task"| Worker
     end
 
-    LineAPI -->|"12. Deliver Response (Reply or Push Fallback)"| User
+    subgraph Phase2 ["2️⃣ Context Retrieval & AI Intelligence"]
+        direction TB
+        StoreRead[("🗄️ Firestore (Primary) / GCS (Fallback)")]:::storage
+        Gemini["🧠 Gemini 3.8 Flash (Persona & Logic)"]:::ai
+        SearchAPIs["🔍 Naver · Kakao · Google (Search Tools)"]:::ai
+        JSONOut["📋 AssistantResponse (Structured JSON)"]:::ai
+
+        StoreRead -->|"6. Inject 12 Turns & Profile"| Gemini
+        Gemini <-->|"7. Autonomous Function Calling"| SearchAPIs
+        Gemini -->|"8. Generate JSON Response"| JSONOut
+    end
+
+    subgraph Phase3 ["3️⃣ Media Processing & Persistence"]
+        direction TB
+        StoreWrite[("🗄️ Save Conversation Turn (Firestore / GCS)")]:::storage
+        CloudTTS["🗣️ Google Cloud TTS (Neural2 Speech)"]:::compute
+        FFmpeg["🎵 ffmpeg Transcoder (/audio/{filename}.m4a)"]:::compute
+
+        StoreWrite -.->|"10a. If audio requested or voice"| CloudTTS
+        CloudTTS -->|"10b. Transcode MP3 to AAC"| FFmpeg
+    end
+
+    subgraph Phase4 ["4️⃣ Multi-Modal Response Delivery"]
+        direction TB
+        LineOut["📤 LINE Messaging API (Reply or Push Fallback)"]:::line
+        UserOut(["👤 LINE User (Chat Screen)"]):::entry
+
+        LineOut -->|"12. Deliver Response"| UserOut
+    end
+
+    Worker -->|"5. Fetch Recent History & Preferences"| StoreRead
+    JSONOut -->|"9. Persist Conversation Turn"| StoreWrite
+    StoreWrite -->|"11. Build Response (Text + Card + Quick Replies)"| LineOut
+    FFmpeg -.->|"Stream Audio URL"| LineOut
+```
+
+### 2. Request-Response Sequence & Async Lifecycle
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor User as 👤 LINE User
+    participant LINE as 🟢 LINE Platform
+    participant FastAPI as ⚡ FastAPI (Cloud Run)
+    participant Worker as 🔄 Background Worker
+    participant State as 🗄️ Firestore / GCS
+    participant Gemini as 🧠 Gemini 3.8 Flash
+    participant TTS as 🗣️ Cloud TTS & ffmpeg
+
+    %% Step 1: Handshake
+    User->>LINE: Send Text or Audio Message
+    LINE->>FastAPI: POST /callback (webhook)
+    FastAPI-->>LINE: HTTP 200 OK (Instant Handshake)
+    FastAPI->>Worker: Dispatch Background Task
+
+    %% Step 2: Context & Loading
+    par Immediate User Feedback
+        Worker->>LINE: Trigger Loading Animation (Chat indicator)
+    and Context Retrieval
+        Worker->>State: Fetch Recent History (12 turns) & Saved Preferences
+        State-->>Worker: Return Conversation Context & Proficiency Level
+    end
+
+    %% Step 3: AI Reasoning & Tools
+    Worker->>Gemini: Prompt with Temporal Context + Schema + Tools
+    opt Autonomous Function Calling
+        Gemini->>State: Save / Update User Preferences
+        Gemini->>FastAPI: Query Naver / Kakao / Google Search
+    end
+    Gemini-->>Worker: Structured JSON (AssistantResponse)
+
+    %% Step 4: Media & Storage
+    par State Persistence
+        Worker->>State: Save Turn & Update Timestamped History
+    and Audio Synthesis (Optional)
+        opt Voice Message or Audio Requested
+            Worker->>TTS: Synthesize Speech (Neural2 ko-KR/ja-JP)
+            TTS->>TTS: Transcode MP3 to AAC (.m4a) via ffmpeg
+            TTS-->>Worker: Audio URL ready (/audio/{filename})
+        end
+    end
+
+    %% Step 5: Delivery
+    Worker->>LINE: Send Messages (Kim Hyun-woo Reply + Card + Quick Replies + Audio)
+    LINE-->>User: Deliver Response in Chat
 ```
 
 ---
@@ -231,14 +306,35 @@ To ensure personalized, high-value learning over extended periods, the bot incor
 Local development and Cloud Run use the same configuration and persistence code. Environment variables take precedence over Secret Manager; Secret Manager uses Application Default Credentials (ADC), with the `gcloud` CLI as a fallback for secret reads. Firestore is the primary store for user conversation and profile data; GCS holds a JSON fallback cache and operational logs.
 
 ```mermaid
-flowchart LR
-  Runtime["Local process or Cloud Run"] --> Config["app/config.py"]
-  Config -->|"Environment / .env"| Settings["Resolved settings"]
-  Config -->|"Secret lookup via ADC, then gcloud CLI"| Secrets[("Secret Manager")]
-  Runtime -->|"Primary user records"| Firestore[("Firestore")]
-  Runtime -. "Firestore unavailable" .-> GCSCache[("GCS user_cache.json")]
-  Runtime -->|"Fallback cache and run logs"| GCS[("Cloud Storage")]
-  Runtime -. "When cloud storage is unavailable" .-> Temp["OS temp directory"]
+flowchart TD
+    classDef runtime fill:#f3e8ff,stroke:#9333ea,stroke-width:2px;
+    classDef config fill:#e0f2fe,stroke:#0284c7,stroke-width:2px;
+    classDef storage fill:#ecfdf5,stroke:#059669,stroke-width:2px;
+
+    Runtime["💻 Runtime (Local Process / Cloud Run)"]:::runtime
+
+    subgraph ConfigLayer ["⚙️ Configuration & Secret Resolution (app/config.py)"]
+        Env[".env / Environment Variables"]:::config
+        Secrets[("Google Cloud Secret Manager")]:::config
+        Settings["Resolved App Settings"]:::config
+
+        Env -->|"1. Local override"| Settings
+        Secrets -->|"2. ADC or gcloud CLI lookup"| Settings
+    end
+
+    subgraph StateLayer ["💾 Tiered Persistence & Diagnostics (app/memory.py)"]
+        Firestore[("1️⃣ Primary Store: Cloud Firestore")]:::storage
+        GCSCache[("2️⃣ Cloud Fallback: GCS user_cache.json")]:::storage
+        Temp["3️⃣ Local Fallback: OS Temp Directory"]:::storage
+        Logs[("📊 Operational Logs: GCS run_log.json & Cloud Logging")]:::storage
+
+        Firestore -. "If unavailable" .-> GCSCache
+        GCSCache -. "If offline" .-> Temp
+    end
+
+    Runtime --> Settings
+    Runtime --> Firestore
+    Runtime --> Logs
 ```
 
 ### 1. Cloud Secret Resolution (Zero Setup)

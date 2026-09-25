@@ -116,44 +116,119 @@ graph LR
 
 ---
 
-## 🏗️ アーキテクチャフロー
+## 🏗️ アーキテクチャ＆データフロー
+
+LINE Messaging APIのタイムアウトを防ぎ、高速で安定したユーザー体験を提供するため、Webhook即時応答（`HTTP 200 OK`）と、AI推論・外部検索・音声合成・データ永続化パイプラインを完全分離しています。
+
+### 1. エンドツーエンド処理パイプライン
 
 ```mermaid
 flowchart TD
-    User(["LINEユーザー（スマホアプリ）"]) -->|"1. テキスト / 音声メッセージ送信"| LineAPI["LINE Messaging API ゲートウェイ"]
-    LineAPI -->|"2. POST /callback (X-Line-Signature)"| FastAPI["FastAPIサーバー (Cloud Run)"]
-    
-    FastAPI -->|"3. HTTP 200 OK (即時応答)"| LineAPI
-    FastAPI -->|"4. バックグラウンドスレッド起動"| Worker["バックグラウンド処理ワーカー"]
+    classDef phase fill:#f8fafc,stroke:#cbd5e1,stroke-width:1px,stroke-dasharray: 4 4;
+    classDef entry fill:#e0f2fe,stroke:#0284c7,stroke-width:2px;
+    classDef compute fill:#f3e8ff,stroke:#9333ea,stroke-width:2px;
+    classDef ai fill:#fef3c7,stroke:#d97706,stroke-width:2px;
+    classDef storage fill:#ecfdf5,stroke:#059669,stroke-width:2px;
+    classDef line fill:#dcfce7,stroke:#16a34a,stroke-width:2px;
 
-    subgraph Processing ["メッセージ処理パイプライン"]
-        Worker -->|"5a. ローディングアニメーション表示"| LineAPI
-        Worker -->|"5b. 音声データ取得 (音声メッセージ時)"| LineAPI
-        Worker -->|"6. 会話履歴・ユーザー設定取得"| Firestore[("Firestore（ユーザーデータの主保存先）")]
-        Worker -. "Firestoreを利用できない場合" .-> GCSState[("GCS JSONステート・フォールバック")]
+    subgraph Phase1 ["1️⃣ 受信＆即時ハンドシェイク"]
+        direction TB
+        UserIn(["👤 LINEユーザー（スマホ）"]):::entry
+        LineIn["🟢 LINE Webhookゲートウェイ"]:::line
+        FastAPI["⚡ FastAPIサーバー (Cloud Run)"]:::compute
+        Worker["🔄 非同期バックグラウンドワーカー"]:::compute
 
-        Worker -->|"7. プロンプト + 履歴 + ツール実行"| Gemini["Gemini 3.8 Flash (google-genai)"]
-
-        subgraph ToolExecution ["自律的ツール呼び出し (Function Calling)"]
-            Gemini <-->|"ツール: search_naver_and_kakao"| SearchAPIs["Naver / Kakao / Google 検索"]
-            Gemini <-->|"ツール: save_user_instruction"| Firestore
-            Gemini <-->|"ツール: clear_user_instructions"| Firestore
-        end
-
-        Gemini -->|"8. 構造化JSON返却 (AssistantResponse)"| Worker
-        Worker -->|"9. 会話履歴の保存"| Firestore
-        Worker -. "Firestoreを利用できない場合" .-> GCSState
-
-        subgraph AudioSynthesis ["音声合成パイプライン"]
-            Worker -->|"10. 音声合成 (リクエスト時または音声入力時)"| CloudTTS["Google Cloud Text-to-Speech"]
-            CloudTTS -->|"MP3 音声"| FFmpeg["ffmpeg (AAC / m4a に変換)"]
-            FFmpeg -->|"一時保存"| AudioStorage["一時ファイル (/audio/{filename})"]
-        end
-
-        Worker -->|"11. メッセージ構築 (テキスト, カード, クイック返信, 音声)"| LineAPI
+        UserIn -->|"1. メッセージ送信"| LineIn
+        LineIn -->|"2. POST /callback"| FastAPI
+        FastAPI -->|"3. HTTP 200 OK (即時応答)"| LineIn
+        FastAPI -->|"4. タスクディスパッチ"| Worker
     end
 
-    LineAPI -->|"12. ユーザーへ返信 (Reply または Push フォールバック)"| User
+    subgraph Phase2 ["2️⃣ コンテキスト取得＆AI推論"]
+        direction TB
+        StoreRead[("🗄️ Firestore (主保存先) / GCS (フォールバック)")]:::storage
+        Gemini["🧠 Gemini 3.8 Flash (ペルソナ・推論)"]:::ai
+        SearchAPIs["🔍 Naver · Kakao · Google (検索ツール)"]:::ai
+        JSONOut["📋 AssistantResponse (構造化JSON)"]:::ai
+
+        StoreRead -->|"6. 直近12ターン履歴・設定注入"| Gemini
+        Gemini <-->|"7. 自律的ツール実行"| SearchAPIs
+        Gemini -->|"8. 構造化JSON生成"| JSONOut
+    end
+
+    subgraph Phase3 ["3️⃣ メディア処理＆データ永続化"]
+        direction TB
+        StoreWrite[("🗄️ 会話ターン保存 (Firestore / GCS)")]:::storage
+        CloudTTS["🗣️ Google Cloud TTS (Neural2 音声合成)"]:::compute
+        FFmpeg["🎵 ffmpeg トランスコーダー (/audio/{filename}.m4a)"]:::compute
+
+        StoreWrite -.->|"10a. 音声要求または音声入力時"| CloudTTS
+        CloudTTS -->|"10b. MP3をAACに変換"| FFmpeg
+    end
+
+    subgraph Phase4 ["4️⃣ マルチモーダル返信配信"]
+        direction TB
+        LineOut["📤 LINE Messaging API (Reply / Pushフォールバック)"]:::line
+        UserOut(["👤 LINEユーザー（トーク画面）"]):::entry
+
+        LineOut -->|"12. 返信メッセージ配信"| UserOut
+    end
+
+    Worker -->|"5. 直近履歴・ユーザー設定取得"| StoreRead
+    JSONOut -->|"9. 会話ターンの保存・更新"| StoreWrite
+    StoreWrite -->|"11. メッセージ構築 (テキスト + カード + クイック返信)"| LineOut
+    FFmpeg -.->|"音声ストリームURL"| LineOut
+```
+
+### 2. リクエスト・レスポンス シーケンス＆非同期ライフサイクル
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor User as 👤 LINEユーザー
+    participant LINE as 🟢 LINEプラットフォーム
+    participant FastAPI as ⚡ FastAPI (Cloud Run)
+    participant Worker as 🔄 バックグラウンドワーカー
+    participant State as 🗄️ Firestore / GCS
+    participant Gemini as 🧠 Gemini 3.8 Flash
+    participant TTS as 🗣️ Cloud TTS & ffmpeg
+
+    %% Step 1: Handshake
+    User->>LINE: メッセージ送信（テキストまたは音声）
+    LINE->>FastAPI: POST /callback (Webhook)
+    FastAPI-->>LINE: HTTP 200 OK（タイムアウト防止の即時ハンドシェイク）
+    FastAPI->>Worker: バックグラウンド処理を開始
+
+    %% Step 2: Context & Loading
+    par ユーザーへの視覚的フィードバック
+        Worker->>LINE: ローディングアニメーション表示
+    and コンテキスト・設定の取得
+        Worker->>State: 直近の会話履歴（12ターン）と学習者設定を取得
+        State-->>Worker: 会話コンテキストと習熟度レベルを返却
+    end
+
+    %% Step 3: AI Reasoning & Tools
+    Worker->>Gemini: プロンプト（時間的文脈 + スキーマ + ツール）
+    opt 自律的ツール呼び出し (Function Calling)
+        Gemini->>State: 学習者設定の保存・更新
+        Gemini->>FastAPI: Naver / Kakao / Google リアルタイム検索
+    end
+    Gemini-->>Worker: 構造化JSON (AssistantResponse)
+
+    %% Step 4: Media & Storage
+    par 会話ステートの永続化
+        Worker->>State: 新しいターンの保存とタイムスタンプ更新
+    and 音声合成（条件付き）
+        opt 音声メッセージまたは発音リクエスト時
+            Worker->>TTS: 音声合成 (Neural2 ko-KR / ja-JP)
+            TTS->>TTS: ffmpegでMP3からAAC (.m4a) に変換
+            TTS-->>Worker: 音声配信用URLを準備 (/audio/{filename})
+        end
+    end
+
+    %% Step 5: Delivery
+    Worker->>LINE: メッセージ送信（ヒョンウ先生の返答 + 表現カード + クイック返信 + 音声）
+    LINE-->>User: トーク画面にメッセージを配信
 ```
 
 ---
@@ -230,14 +305,35 @@ KoreanTeacher_LINE/
 ローカル開発とCloud Runは同じ設定・永続化コードを使用します。環境変数がSecret Managerより優先され、Secret ManagerはADCを使用して読み込みます。ADCで取得できない場合は `gcloud` CLIでシークレットを読み込みます。ユーザーの会話・プロファイル情報はFirestoreを主保存先とし、GCSはJSONフォールバックキャッシュと運用ログに使用します。
 
 ```mermaid
-flowchart LR
-  Runtime["ローカルプロセスまたはCloud Run"] --> Config["app/config.py"]
-  Config -->|"環境変数 / .env"| Settings["解決済み設定"]
-  Config -->|"ADC、次にgcloud CLIでシークレット取得"| Secrets[("Secret Manager")]
-  Runtime -->|"ユーザーデータの主保存先"| Firestore[("Firestore")]
-  Runtime -. "Firestoreを利用できない場合" .-> GCSCache[("GCS user_cache.json")]
-  Runtime -->|"フォールバックキャッシュ・実行ログ"| GCS[("Cloud Storage")]
-  Runtime -. "Cloud Storageを利用できない場合" .-> Temp["OS一時ディレクトリ"]
+flowchart TD
+    classDef runtime fill:#f3e8ff,stroke:#9333ea,stroke-width:2px;
+    classDef config fill:#e0f2fe,stroke:#0284c7,stroke-width:2px;
+    classDef storage fill:#ecfdf5,stroke:#059669,stroke-width:2px;
+
+    Runtime["💻 実行ランタイム (ローカル / Cloud Run)"]:::runtime
+
+    subgraph ConfigLayer ["⚙️ 設定・シークレット解決フロー (app/config.py)"]
+        Env[".env / ローカル環境変数"]:::config
+        Secrets[("Google Cloud Secret Manager")]:::config
+        Settings["解決済みアプリケーション設定"]:::config
+
+        Env -->|"1. ローカル優先"| Settings
+        Secrets -->|"2. ADC または gcloud CLI取得"| Settings
+    end
+
+    subgraph StateLayer ["💾 階層型データ永続化＆ログ管理 (app/memory.py)"]
+        Firestore[("1️⃣ プライマリストア: Cloud Firestore")]:::storage
+        GCSCache[("2️⃣ クラウドフォールバック: GCS user_cache.json")]:::storage
+        Temp["3️⃣ ローカルフォールバック: OS一時ディレクトリ"]:::storage
+        Logs[("📊 運用ログ: GCS run_log.json & Cloud Logging")]:::storage
+
+        Firestore -. "利用不可時" .-> GCSCache
+        GCSCache -. "オフライン時" .-> Temp
+    end
+
+    Runtime --> Settings
+    Runtime --> Firestore
+    Runtime --> Logs
 ```
 
 ### 1. クラウドシークレットの解決
