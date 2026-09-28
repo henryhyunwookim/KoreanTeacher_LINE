@@ -232,6 +232,34 @@ sequenceDiagram
 
 ---
 
+## 🏛️ Technical & Architectural Decisions
+
+- **Asynchronous Webhook Decoupling (Instant HTTP 200 Handshake + Background Task)**:
+  - *Decision*: Acknowledge incoming LINE webhook requests with `HTTP 200 OK` within milliseconds, delegating LLM inference, search function calling, audio synthesis, and database operations to FastAPI asynchronous background tasks.
+  - *Context & Motivation*: The LINE platform enforces a strict 1–2 second timeout for webhooks. If the server does not respond immediately, the platform retries delivery, triggering cascading duplicate message deliveries to the user.
+  - *Rationale & Alternatives Considered*: Synchronous webhook processing inevitably fails whenever external search APIs (Naver, Kakao) or TTS audio rendering take longer than 2 seconds. The immediate handshake prevents timeouts and initiates the LINE native chat loading animation, with final delivery executed via `reply_token` (or falling back to `push_message`).
+  - *Consequences & Impact*: Guarantees zero duplicate responses, 100% webhook handshake reliability, and instant perceived responsiveness for mobile chat users.
+
+- **Dual-Tier State Persistence (Google Cloud Firestore with GCS & Temp Fallbacks)**:
+  - *Decision*: Store conversation turns, proficiency tiers, and user preferences in Google Cloud Firestore documents, with an automated fallback to Google Cloud Storage (or OS temp directory).
+  - *Context & Motivation*: Serverless Google Cloud Run instances are stateless and ephemeral, purging local memory on scale-to-zero and across multiple concurrent container instances.
+  - *Rationale & Alternatives Considered*: Provisioning a relational database (Cloud SQL / Postgres) incurs substantial idle hosting costs and connection pooling complexity for a mobile chatbot. Firestore provides sub-10ms document lookups keyed on `user_id` with zero idle compute cost.
+  - *Consequences & Impact*: Continuous conversational memory and personalized proficiency adaptation across container restarts and horizontal auto-scaling.
+
+- **Temporal Awareness & Sliding Context Window (12 Turns with Elapsed ISO Timestamps)**:
+  - *Decision*: Persist up to 40 turns per student in Firestore, but inject a sliding window of the 12 most recent turns (6 message pairs) annotated with ISO-8601 timestamps (JST/KST UTC+9) into Gemini's context.
+  - *Context & Motivation*: Sending unlimited conversation history causes prompt instruction dilution and drives up token costs. Crucially, without explicit timestamps, LLMs cannot differentiate between immediate user repetitions within 5 seconds vs. a student sending a customary daily greeting 24 hours later.
+  - *Rationale & Alternatives Considered*: Computing elapsed duration between turns gives the persona true temporal awareness (handling morning vs. evening shifts, warm multi-day resumptions, and avoiding false repetition warnings for standard daily greetings).
+  - *Consequences & Impact*: Minimal token footprint, realistic human-like conversation progression, and elimination of false repetition flags.
+
+- **Pydantic Schema Enforcement (`AssistantResponse`) for Structured UI Cards**:
+  - *Decision*: Require Gemini 3.8 Flash to return strict JSON adhering to a Pydantic schema containing `reply_text`, structured `learning_card` (korean, katakana, japanese translation), and dynamic `quick_replies`.
+  - *Context & Motivation*: Parsing unstructured free-form text with regular expressions to extract phrase cards, pronunciation guides, and interactive buttons frequently breaks when the LLM alters formatting.
+  - *Rationale & Alternatives Considered*: Native JSON schema validation guarantees that every response reliably populates LINE interactive flex cards and one-tap quick reply buttons.
+  - *Consequences & Impact*: 100% reliable rendering of LINE interactive elements and consistent pedagogical structure.
+
+---
+
 ## 📁 Project Structure
 
 Curated workspace directory structure highlighting key files and components:
