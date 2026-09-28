@@ -32,10 +32,10 @@ An AI-powered interactive Korean learning partner and friendly guide built nativ
   - Actively leverages the ~70% shared Sino-Korean vocabulary (e.g. 약속 = 約束, 무료 = 無料) to build immediate confidence for Japanese speakers.
 - **🔍 Real-Time Korean Trend & Travel Search**
   - Uses custom function calling tools integrated with Naver Search (Blog & Web), Kakao/Daum Search, and Google Custom Search to provide accurate, up-to-date recommendations for cafes, restaurants, tourist spots, and slang.
-- **🧠 Time-Aware Short-Term & Long-Term Memory Architecture**
-  - **Time-Aware Short-Term Context**: Stores up to 40 turns per user and sends a sliding window of the 12 most recent turns (6 message pairs) to Gemini, with ISO-8601 timestamps (JST/KST - UTC+9). Calculates elapsed time between turns to provide Kim Hyunwoo with temporal context (morning vs. evening, same-day continuations vs. multi-day resumptions). Intelligently differentiates immediate practice from long-term memory retention, and avoids false repeat warnings when standard greetings occur across days.
-  - **Long-Term Memory**: Automatically persists user proficiency levels, conversation history, and explicitly saved preferences (e.g. learning goals, nicknames, favorite idols) in **Google Cloud Firestore**. If Firestore cannot initialize, the app uses a JSON state cache in **Google Cloud Storage** (or the local OS temp directory when cloud storage is unavailable).
-  - **Proactive Inactivity Check-ins (Re-engagement)**: Periodically checks for students who have been inactive for 3–14 days and sends warm, zero-pressure check-in messages from Kim Hyunwoo via LINE push messages (orchestrated via `/cron/check-in` and Google Cloud Scheduler, with a strict 7-day cooldown).
+- **🧠 Permanent User Memory & Time-Aware Context Architecture**
+  - **Permanent Student Profiles & Preferences**: Persists individual student proficiency tiers (`beginner`, `intermediate`, `advanced`), pedagogical diagnostic evidence (`proficiency_reason`), and explicit personal directives (e.g., favorite K-pop idols, travel goals, requested conversation styles, nicknames) in **Google Cloud Firestore**.
+  - **Autonomous Tool-Driven Personalization**: Gemini autonomously discovers and saves user preferences via `save_user_instruction` and dynamically recalibrates proficiency tiers via `update_user_proficiency` during natural conversation, with full user-controlled reset via `clear_user_instructions`.
+  - **Time-Aware Context & Proactive Check-ins**: Stores up to 40 turns per student with ISO-8601 timestamps (JST/KST) to give Kim Hyun-woo temporal context, while running periodic re-engagement check-ins (`/cron/check-in`) for students inactive 3–14 days.
 - **☁️ Serverless Cloud Native**
   - Container-based execution architected for **Google Cloud Run**, providing scalable deployments that scale to zero when inactive.
 
@@ -112,6 +112,58 @@ graph LR
     Engine --> Levels
     Levels --> Output["💬 Dynamic Tailored LINE Response<br/>+ Audio & Quick Replies"]
 ```
+
+---
+
+## 🧠 Permanent User Memory Architecture (Preferences, Proficiency & Personalization)
+
+`KoreanTeacher_LINE` treats every learner as an individual student with distinct goals, interests, and learning paces. Rather than operating as an ephemeral chatbot, it maintains **Permanent User Memory** in **Google Cloud Firestore** (under collection `KoreanTeacherChats/{user_id}`), with transparent fallback to **Google Cloud Storage**.
+
+### 1. Permanent Memory Dimensions
+
+| Memory Dimension | Data Schema Field | Management & Ingestion Mechanism | How Teacher Kim (김현우) Leverages It |
+| :--- | :--- | :--- | :--- |
+| **🎯 Language Proficiency Level** | `proficiency.level`<br/>(`beginner`, `intermediate`, `advanced`) | Autonomous tool `update_user_proficiency` & dynamic JSON response field | Dynamically calibrates the Japanese-to-Korean language ratio (80% Japanese for beginners down to 100% Korean immersion for advanced), activates/deactivates Katakana phonetic guides, and alters grammatical complexity. |
+| **📝 Proficiency Rationale & Evidence** | `proficiency.reason`<br/>*(e.g., "生徒がTOPIK5級所持と申告", "会話から流暢さを確認")* | `update_user_proficiency` tool | Preserves diagnostic evidence across sessions so future chat turns maintain pedagogical consistency without repeatedly testing or questioning the student. |
+| **💡 Student Preferences & Instructions** | `permanent_instructions`<br/>*(Array of strings)* | Autonomous tool `save_user_instruction`<br/>& reset tool `clear_user_instructions` | Permanently retains explicit student directives: favorite K-pop idols (e.g. *"BTSが好き"*), personal hobbies (cafes, dramas), target goals (*"travel survival phrases"*, *"business emails"*), custom nicknames, and requested formality (*"タメ口で話して"*). |
+| **⏱️ Time-Aware Dialogue Turns** | `history`<br/>*(Up to 40 timestamped turns)* | Per-turn automated pipeline | Injects the 12 most recent turns annotated with ISO-8601 timestamps (JST/KST UTC+9) and calculated elapsed seconds, providing temporal context (morning greetings vs. evening check-ins, same-day continuations vs. multi-day resumptions). |
+| **📅 Last Active Timestamp** | `last_interaction` | Per-turn automated pipeline | Powers proactive re-engagement check-ins (`/cron/check-in`) for students inactive between 3 and 14 days, weaving their saved preferences and recent practice topics into warm push messages. |
+
+### 2. Autonomous Memory Lifecycle
+
+```mermaid
+flowchart TD
+    MSG["👤 User LINE Message<br/>(e.g., 'BTSの曲を歌えるようになりたい！' or 'TOPIK3級持ってます')"] --> ROUTER["⚡ FastAPI Webhook Gateway"]
+    ROUTER --> FETCH["📥 Load Permanent Profile & State<br/>(Firestore: KoreanTeacherChats/{user_id})"]
+    
+    FETCH --> INJECT["🧠 Inject into Gemini 3.8 Flash Context<br/>• Current Proficiency Level & Reason<br/>• Permanent Preferences List (permanent_instructions)<br/>• 12 Timestamped Recent Turns (ISO-8601)"]
+    
+    INJECT --> DECISION{"Gemini Reasoning & Tool Execution"}
+    
+    DECISION -->|"Discovers New Preference / Goal"| TOOL_PREF["🛠️ Tool: <code>save_user_instruction</code><br/>Append to permanent_instructions"]
+    DECISION -->|"Detects Level Change / Declaration"| TOOL_PROF["🛠️ Tool: <code>update_user_proficiency</code><br/>Update level & diagnostic reason"]
+    DECISION -->|"Student Requests Memory Reset"| TOOL_CLEAR["🛠️ Tool: <code>clear_user_instructions</code><br/>Wipe permanent preferences"]
+    
+    TOOL_PREF & TOOL_PROF & TOOL_CLEAR --> SAVE[("💾 Firestore Permanent Persistence<br/><code>KoreanTeacherChats/{user_id}</code>")]
+    
+    DECISION --> GENERATE["💬 Structured Response Delivery<br/>• Calibrated to student's exact proficiency tier<br/>• Directly references saved interests & idols<br/>• Structured key phrase card & dynamic quick replies"]
+    GENERATE --> USER["📲 Delivered to Student's LINE Chat Screen"]
+```
+
+### 3. Concrete Chat Scenarios Powered by Permanent Memory
+
+- **Remembering Personal Interests & Idols**:
+  - *Student*: *"来月ソウルに行くんだけど、聖水（ソンス）のおすすめカフェ教えて！"*
+  - *Teacher Kim*: Invokes `save_user_instruction("来月ソウル旅行・聖水のカフェに興味あり")`. In subsequent conversations, Teacher Kim proactively follows up: *"ソウル旅行の準備は順調ですか？聖水で行きたいカフェは見つかりましたか？"*
+- **Dynamic Proficiency Calibration**:
+  - *Student*: *"実は韓国語の勉強始めてまだ1週間なんです..."*
+  - *Teacher Kim*: Autonomously executes `update_user_proficiency(level="beginner", reason="学習開始1週間と申告")`. The bot immediately increases Japanese explanations to ~80%, provides phonetic Katakana pronunciation cards with liaison sound change notes, and reinforces high-frequency survival phrases.
+- **Explicit Conversational Formality Customization**:
+  - *Student*: *"友達と話す練習がしたいから、タメ口（パンマル）で話して！"*
+  - *Teacher Kim*: Invokes `save_user_instruction("タメ口（パンマル）での会話を希望")`. From that turn onward, Teacher Kim addresses the student in natural informal Korean, explaining informal nuances and colloquial slang.
+- **User-Controlled Memory Reset**:
+  - *Student*: *"設定や好みを全部リセットして"*
+  - *Teacher Kim*: Executes `clear_user_instructions()`, confirming that all personal preferences have been wiped while preserving base conversation continuity.
 
 ---
 
