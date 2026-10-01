@@ -465,7 +465,7 @@ python scripts/sync_secrets.py --init-bucket
 python scripts/sync_secrets.py --push-env .env
 ```
 
-The utility accepts `--project <project-id>` to override the active `gcloud` project. Actions can be combined, for example `python scripts/sync_secrets.py --project <project-id> --init-bucket --dry-run`. `--push-env` uploads only recognized API credential variables; it does not upload settings such as `BASE_URL` or `GCS_BUCKET_NAME`.
+The utility accepts `--project <project-id>` to override the active `gcloud` project. Actions can be combined, for example `python scripts/sync_secrets.py --project <project-id> --init-bucket --dry-run`. `--push-env` uploads only recognized API credential variables; it does not upload settings such as `BASE_URL` or `GCS_BUCKET_NAME`. The sync utility automatically destroys superseded secret versions, strictly maintaining single-version retention to protect the GCP free tier.
 
 ### Inactivity Check-In Utility
 

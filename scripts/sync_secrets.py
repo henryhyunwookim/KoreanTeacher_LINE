@@ -153,6 +153,19 @@ def ensure_secret(secret_id: str, value: str, project_id: str) -> None:
     )
     print(f"  -> Successfully updated secret version for '{secret_id}'.")
 
+    # Auto-prune old versions to maintain minimal active secret footprint
+    try:
+        list_cmd = ["gcloud", "secrets", "versions", "list", secret_id, f"--project={project_id}", "--filter=state:ENABLED", "--format=value(name)"]
+        list_res = subprocess.run(list_cmd, capture_output=True, text=True, shell=is_win)
+        if list_res.returncode == 0:
+            active_vers = [v.strip().split("/")[-1] for v in list_res.stdout.splitlines() if v.strip()]
+            if len(active_vers) > 1:
+                sorted_vers = sorted(active_vers, key=lambda x: int(x) if x.isdigit() else 0, reverse=True)
+                for old_v in sorted_vers[1:]:
+                    subprocess.run(["gcloud", "secrets", "versions", "destroy", old_v, f"--secret={secret_id}", f"--project={project_id}", "--quiet"], shell=is_win, capture_output=True)
+    except Exception:
+        pass
+
 
 def push_env_file(env_path: str, project_id: str) -> None:
     """Parses a local .env configuration file and uploads recognized secrets.
