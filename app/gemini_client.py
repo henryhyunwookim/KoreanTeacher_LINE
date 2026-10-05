@@ -793,50 +793,15 @@ def create_chat(
         update_user_proficiency
     ]
     
-    level_descriptions = {
-        "beginner": "初級（入門・ビギナー）- 日本語中心、丁寧なカタカナ発音付き、基礎フレーズ、やさしく励ます指導",
-        "intermediate": "中級 - 韓国語50%/日本語50%、ネイティブらしい自然な言い回しへのブラッシュアップ、パンマル/敬語のニュアンス解説",
-        "advanced": "上級 - 韓国語イマージョン（韓国語80-100%）、洗練された語彙・慣用句・時事トピック、ハイレベルな会話"
-    }
-    level_desc = level_descriptions.get(current_level, level_descriptions["beginner"])
-    
-    elapsed_human = format_elapsed_time_human(elapsed_seconds) if elapsed_seconds is not None else "初回または久しぶりの会話"
-    temporal_guidance = get_temporal_guidance(elapsed_seconds, day_diff)
-    date_str = current_dt.strftime("%Y年%m月%d日 (%a) %H:%M")
-
-    custom_system_instruction = system_instruction
-    custom_system_instruction += f"""
-
-<current_student_profile>
-- 記憶されている習熟度レベル: 【{current_level.upper()}】
-- レベル指導指針: {level_desc}
-- 設定経緯: {current_reason or '初期設定'}
-※重要：返信の言語比率、解説の深さ、キー表現の難易度、発音ヒントの有無を必ずこのレベルに合わせて調整してください。
-生徒からレベルの変更希望があった場合や、会話からレベルが変わったと判断した場合は、必ずレベルを更新してください。
-</current_student_profile>
-
-<current_time_and_temporal_context>
-- 現在の日本/韓国時間: 【{date_str} (JST/KST)】
-- 前回のメッセージからの経過時間: 【{elapsed_human}】
-- 時間経過に応じた会話指針:
-{temporal_guidance}
-※重要：会話の挨拶やリアクションは、この「現在の時間帯（朝・昼・夕方・夜・深夜）」および「経過時間」をしっかりと踏まえて行ってください。
-たとえば、前回から数日経過しているのに「今日2回目の挨拶だね」と言ったり、深夜なのに「良い午後を！」と言わないよう、生きた人間として自然に振る舞ってください。
-</current_time_and_temporal_context>
-"""
-
-    if permanent_instructions:
-        instructions_text = "\n".join([f"- {inst}" for inst in permanent_instructions])
-        custom_system_instruction += f"\n\n<user_specific_instructions>\n{instructions_text}\n</user_specific_instructions>"
-        
     client = get_gemini_client()
     if not client:
         raise RuntimeError("Gemini API Client is not configured. Please ensure GEMINI_API_KEY is available in Secret Manager or environment.")
 
+    # Using strictly static system_instruction enables Gemini's automatic prompt prefix caching
     return client.chats.create(
         model=model_name,
         config=types.GenerateContentConfig(
-            system_instruction=custom_system_instruction,
+            system_instruction=system_instruction,
             temperature=0.75,
             response_mime_type="application/json",
             response_schema=AssistantResponse,
@@ -844,6 +809,37 @@ def create_chat(
         ),
         history=history
     )
+
+
+def build_dynamic_turn_context(
+    user_profile: dict[str, Any],
+    current_dt: datetime,
+    elapsed_seconds: Optional[float],
+    day_diff: Optional[int]
+) -> str:
+    """Constructs a compact dynamic context block for the current conversation turn,
+    keeping system_instruction static to enable Gemini API prompt caching."""
+    current_level = user_profile.get("proficiency_level", "beginner")
+    current_reason = user_profile.get("proficiency_reason", "")
+    permanent_instructions = user_profile.get("permanent_instructions", [])
+    
+    level_descriptions = {
+        "beginner": "初級（入門）- 日本語中心、丁寧なカタカナ発音、基礎フレーズ、優しく励ます指導",
+        "intermediate": "中級 - 韓国語50%/日本語50%、ネイティブらしい自然な言い回し、パンマル/敬語のニュアンス解説",
+        "advanced": "上級 - 韓国語イマージョン（80-100%）、洗練された語彙・慣用句・時事トピック、ハイレベル会話"
+    }
+    level_desc = level_descriptions.get(current_level, level_descriptions["beginner"])
+    elapsed_human = format_elapsed_time_human(elapsed_seconds) if elapsed_seconds is not None else "初回または久しぶりの会話"
+    temporal_guidance = get_temporal_guidance(elapsed_seconds, day_diff)
+    date_str = current_dt.strftime("%Y年%m月%d日 (%a) %H:%M")
+    
+    lines = [
+        f"【生徒情報・現在日時】レベル: {current_level.upper()} ({level_desc}) | 現在時刻: {date_str} (JST) | 経過: {elapsed_human}",
+        f"【時間経過指針】{temporal_guidance}"
+    ]
+    if permanent_instructions:
+        lines.append(f"【永続的な指示・好み】" + "; ".join(permanent_instructions))
+    return "\n".join(lines)
 
 def evaluate_korean_text(user_id: str, user_text: str) -> dict:
     raw_history, user_profile = get_user_context(user_id, "text")
@@ -872,7 +868,8 @@ def evaluate_korean_text(user_id: str, user_text: str) -> dict:
         user_profile=user_profile
     )
     
-    prompt = f"生徒のメッセージ：「{user_text}」"
+    turn_context = build_dynamic_turn_context(user_profile, current_dt, elapsed_seconds, day_diff)
+    prompt = f"{turn_context}\n\n生徒のメッセージ：「{user_text}」"
     if repetition_prompt:
         prompt += f"\n\n{repetition_prompt}"
         
@@ -933,7 +930,8 @@ def evaluate_korean_audio(user_id: str, audio_path: str, mime_type: str = "audio
             except Exception:
                 pass
                 
-    prompt = "生徒から音声メッセージが届きました！内容を確認して、生徒の習熟度レベルに応じた温かいフィードバックと一緒に返信してください。"
+    turn_context = build_dynamic_turn_context(user_profile, current_dt, elapsed_seconds, day_diff)
+    prompt = f"{turn_context}\n\n生徒から音声メッセージが届きました！内容を確認して、生徒の習熟度レベルに応じた温かいフィードバックと一緒に返信してください。"
     if taught_phrase:
         prompt += f"\n（※補足：直前のターンで教えた表現『{taught_phrase}』の発音練習の可能性があります。聞き取った内容と照らし合わせて温かく講評してください）"
         

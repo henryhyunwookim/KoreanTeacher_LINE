@@ -310,6 +310,11 @@ sequenceDiagram
   - *Rationale & Alternatives Considered*: Native JSON schema validation guarantees that every response reliably populates LINE interactive flex cards and one-tap quick reply buttons.
   - *Consequences & Impact*: 100% reliable rendering of LINE interactive elements and consistent pedagogical structure.
 
+- **Compact Conversational History & Static Prompt Prefix Caching**:
+  - *Decision*: Strip raw JSON schema response payloads from conversation history turns before feeding into `create_chat`, and separate the static system persona instruction from dynamic temporal/student variables.
+  - *Context & Motivation*: Storing and echoing the full JSON responses (`chat_reply`, `audio_script`, `quick_replies`, `detected_lang`, `user_proficiency`) across the 12-turn history window bloated token consumption by 3–4x. Concurrently, embedding changing timestamps into `system_instruction` invalidated Gemini's prompt prefix cache on every request.
+  - *Rationale & Alternatives Considered*: Feeding back only natural dialogue (`chat_reply`) and taught phrases preserves full pedagogical context while slashing history tokens by ~65%. Keeping `system_instruction` strictly static allows Gemini to leverage prompt prefix caching, reducing latency and cost.
+
 ---
 
 ## 📁 Project Structure
